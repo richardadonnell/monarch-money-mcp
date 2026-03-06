@@ -64,37 +64,233 @@ The server uses the [`monarchmoney`](https://github.com/hammem/monarchmoney) lib
 
 ## REST API Endpoints
 
-All endpoints require: `Authorization: Bearer {MCP_API_KEY}`
+All endpoints require: `Authorization: Bearer {MCP_API_KEY}` except `/health`.
 
-| Method | Path | Description |
+---
+
+### `GET /health`
+Unauthenticated health check.
+```json
+{ "status": "ok" }
+```
+
+---
+
+### `GET /api/accounts`
+All accounts with current balances, types, and metadata.
+
+No query parameters.
+
+---
+
+### `GET /api/transactions`
+Transactions with optional filtering.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `limit` | integer | `100` | Max transactions to return (max 500) |
+| `start_date` | `YYYY-MM-DD` | — | Filter from this date inclusive |
+| `end_date` | `YYYY-MM-DD` | — | Filter to this date inclusive |
+| `search` | string | — | Free-text search across merchant/description |
+| `category_ids` | string (comma-separated IDs) | — | Restrict to these category IDs |
+| `account_ids` | string (comma-separated IDs) | — | Restrict to these account IDs |
+| `tag_ids` | string (comma-separated IDs) | — | Restrict to these tag IDs |
+| `has_attachments` | boolean | — | Filter by attachment presence |
+| `has_notes` | boolean | — | Filter by note presence |
+| `is_split` | boolean | — | Filter split transactions |
+| `is_recurring` | boolean | — | Filter recurring transactions |
+
+Example:
+```
+GET /api/transactions?limit=50&start_date=2026-03-01&end_date=2026-03-31&search=Netflix
+```
+
+---
+
+### `GET /api/cashflow`
+Detailed cashflow breakdown by category for a period.
+
+| Parameter | Type | Description |
 |---|---|---|
-| `GET` | `/health` | Health check (no auth) |
-| `GET` | `/api/accounts` | All accounts with balances |
-| `GET` | `/api/transactions?limit=100&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` | Transactions |
-| `GET` | `/api/cashflow?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` | Cashflow by category |
-| `GET` | `/api/budgets?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` | Budget vs actual |
-| `GET` | `/api/recurring` | Recurring transactions & subscriptions |
-| `GET` | `/api/networth?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` | Net worth history |
-| `POST` | `/api/transaction/{id}` | Update a transaction (JSON body) |
-| `GET` | `/api/token` | Get current Monarch session token |
+| `start_date` | `YYYY-MM-DD` | Period start |
+| `end_date` | `YYYY-MM-DD` | Period end |
+
+---
+
+### `GET /api/budgets`
+Budget categories with planned amounts and actual spending.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `start_date` | `YYYY-MM-DD` | Budget period start |
+| `end_date` | `YYYY-MM-DD` | Budget period end |
+
+---
+
+### `GET /api/recurring`
+Recurring transactions and subscriptions.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `start_date` | `YYYY-MM-DD` | Period start |
+| `end_date` | `YYYY-MM-DD` | Period end |
+
+---
+
+### `GET /api/networth`
+Historical net worth snapshots (wraps `get_aggregate_snapshots`).
+
+| Parameter | Type | Description |
+|---|---|---|
+| `start_date` | `YYYY-MM-DD` | History start date |
+| `end_date` | `YYYY-MM-DD` | History end date |
+
+---
+
+### `POST /api/transaction/{id}`
+Update a transaction's category, notes, or flags.
+
+**Path parameter:** `id` — the Monarch transaction ID
+
+**JSON body** (all fields optional):
+```json
+{
+  "category_id": "string",
+  "notes": "string",
+  "hide_from_reports": false,
+  "needs_review": true
+}
+```
+
+---
+
+### `GET /api/token`
+Return the current Monarch session token. Useful for bootstrapping `MONARCH_TOKEN` after an initial email/password login.
+
+Requires auth. Returns:
+```json
+{ "token": "5de1575d..." }
+```
 
 ---
 
 ## MCP Tools
 
-| Tool | Description |
-|---|---|
-| `get_accounts` | All accounts with balances |
-| `get_transactions` | Transactions with rich filtering |
-| `get_cashflow_summary` | Income / expenses / savings rate |
-| `get_cashflow` | Cashflow breakdown by category |
-| `get_budgets` | Budget vs actual spend |
-| `get_recurring_transactions` | Subscriptions and recurring items |
-| `get_account_holdings` | Investment account holdings |
-| `get_net_worth_history` | Historical net worth snapshots |
-| `get_transaction_categories` | Category list with IDs |
-| `update_transaction` | Update category, notes, or flags |
-| `set_budget_amount` | Set monthly budget for a category |
+---
+
+### `get_accounts`
+Return all Monarch Money accounts with current balances, types, and metadata.
+
+No parameters.
+
+---
+
+### `get_transactions`
+Return transactions with optional filtering.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `limit` | integer | `100` | Max transactions (max 500) |
+| `start_date` | `YYYY-MM-DD` | — | Filter from this date inclusive |
+| `end_date` | `YYYY-MM-DD` | — | Filter to this date inclusive |
+| `search` | string | — | Free-text search across merchant/description |
+| `category_ids` | list[string] | — | Restrict to these category IDs |
+| `account_ids` | list[string] | — | Restrict to these account IDs |
+| `tag_ids` | list[string] | — | Restrict to these tag IDs |
+| `has_attachments` | boolean | — | Filter by attachment presence |
+| `has_notes` | boolean | — | Filter by note presence |
+| `is_split` | boolean | — | Filter split transactions only |
+| `is_recurring` | boolean | — | Filter recurring transactions only |
+
+---
+
+### `get_cashflow_summary`
+Return cashflow totals — income, expenses, and savings rate — for a period.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `start_date` | `YYYY-MM-DD` | First of current month | Period start |
+| `end_date` | `YYYY-MM-DD` | Today | Period end |
+
+---
+
+### `get_cashflow`
+Return detailed cashflow breakdown by category.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `start_date` | `YYYY-MM-DD` | Period start |
+| `end_date` | `YYYY-MM-DD` | Period end |
+
+---
+
+### `get_budgets`
+Return budget categories with planned amounts and actual spending.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `start_date` | `YYYY-MM-DD` | Budget period start |
+| `end_date` | `YYYY-MM-DD` | Budget period end |
+
+---
+
+### `get_recurring_transactions`
+Return recurring transactions and subscriptions.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `start_date` | `YYYY-MM-DD` | Period start |
+| `end_date` | `YYYY-MM-DD` | Period end |
+
+---
+
+### `get_account_holdings`
+Return current holdings for an investment account.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `account_id` | string | ✅ | Monarch account ID — get from `get_accounts` first |
+
+---
+
+### `get_net_worth_history`
+Return historical net worth snapshots.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `start_date` | `YYYY-MM-DD` | History start date |
+| `end_date` | `YYYY-MM-DD` | History end date |
+
+---
+
+### `get_transaction_categories`
+Return all transaction categories with IDs. Use IDs with `get_transactions` filters or `set_budget_amount`.
+
+No parameters.
+
+---
+
+### `update_transaction`
+Update a transaction's category, notes, or flags. All fields except `transaction_id` are optional.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `transaction_id` | string | ✅ | The transaction ID to update |
+| `category_id` | string | — | New category ID (from `get_transaction_categories`) |
+| `notes` | string | — | Free-text notes / memo |
+| `hide_from_reports` | boolean | — | Exclude from spending reports |
+| `needs_review` | boolean | — | Flag as needing review |
+
+---
+
+### `set_budget_amount`
+Set the monthly budget amount for a category.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `amount` | float | ✅ | Budget amount in USD |
+| `category_id` | string | ✅ | Category ID (from `get_transaction_categories`) |
+| `start_date` | `YYYY-MM-01` | ✅ | First day of the target month |
 
 ---
 
