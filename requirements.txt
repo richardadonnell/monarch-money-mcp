@@ -1,0 +1,4 @@
+fastmcp>=2.0
+monarchmoney>=0.7
+uvicorn[standard]>=0.29
+starlette>=0.37
