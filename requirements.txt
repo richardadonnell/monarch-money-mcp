@@ -1,4 +1,5 @@
 fastmcp>=2.0
-monarchmoney>=0.7
+monarchmoney>=0.1.15
+gql[aiohttp]>=3.0,<4.0
 uvicorn[standard]>=0.29
 starlette>=0.37

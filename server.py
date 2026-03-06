@@ -30,6 +30,7 @@ from typing import Any, Optional
 import uvicorn
 from fastmcp import FastMCP
 from monarchmoney import MonarchMoney
+from monarchmoney.monarchmoney import MonarchMoneyEndpoints
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -53,13 +54,24 @@ PORT: int = int(os.getenv("PORT", "8000"))
 
 # --- Monarch client (module-level singleton) ----------------------------------
 
+# Fix: Monarch changed API domain from api.monarchmoney.com to api.monarch.com
+# https://github.com/hammem/monarchmoney/issues/184
+MonarchMoneyEndpoints.BASE_URL = "https://api.monarch.com"
+
 mm = MonarchMoney()
+_monarch_ready: bool = False  # lazy-init flag
 
 
 async def _init_monarch() -> None:
-    """Authenticate the Monarch Money client from env vars."""
+    """Authenticate the Monarch Money client from env vars. Idempotent."""
+    global _monarch_ready
+    if _monarch_ready:
+        return
+
     if MONARCH_TOKEN:
-        mm.token = MONARCH_TOKEN
+        mm.set_token(MONARCH_TOKEN)
+        mm._headers["Authorization"] = f"Token {MONARCH_TOKEN}"
+        _monarch_ready = True
         logger.info("Monarch: using token from MONARCH_TOKEN env var (stateless)")
         return
 
@@ -76,6 +88,7 @@ async def _init_monarch() -> None:
             save_session=False,
             mfa_secret_key=MONARCH_MFA_SECRET,  # None = no 2FA; Base32 secret = auto-TOTP
         )
+        _monarch_ready = True
         logger.info("Monarch: logged in with MONARCH_EMAIL / MONARCH_PASSWORD")
         if MONARCH_MFA_SECRET:
             logger.info("Monarch: 2FA TOTP generated automatically from MONARCH_MFA_SECRET")
@@ -116,6 +129,7 @@ mcp = FastMCP(
 )
 async def get_accounts() -> str:
     """Return all Monarch Money accounts with current balances, types, and metadata."""
+    await _init_monarch()
     data = await mm.get_accounts()
     return _json(data)
 
@@ -168,6 +182,7 @@ async def get_transactions(
     }.items():
         if v is not None:
             kwargs[k] = v
+    await _init_monarch()
     data = await mm.get_transactions(**kwargs)
     return _json(data)
 
@@ -397,6 +412,7 @@ async def health(request: Request) -> JSONResponse:
 
 async def api_accounts(request: Request) -> JSONResponse:
     try:
+        await _init_monarch()
         return JSONResponse(await mm.get_accounts())
     except Exception as exc:
         logger.error("api_accounts: %s", exc)
@@ -405,6 +421,7 @@ async def api_accounts(request: Request) -> JSONResponse:
 
 async def api_transactions(request: Request) -> JSONResponse:
     try:
+        await _init_monarch()
         params = dict(request.query_params)
         limit = int(params.pop("limit", 100))
         return JSONResponse(await mm.get_transactions(limit=limit, **params))
@@ -415,6 +432,7 @@ async def api_transactions(request: Request) -> JSONResponse:
 
 async def api_cashflow(request: Request) -> JSONResponse:
     try:
+        await _init_monarch()
         params = dict(request.query_params)
         return JSONResponse(await mm.get_cashflow(**params))
     except Exception as exc:
@@ -424,6 +442,7 @@ async def api_cashflow(request: Request) -> JSONResponse:
 
 async def api_budgets(request: Request) -> JSONResponse:
     try:
+        await _init_monarch()
         params = dict(request.query_params)
         return JSONResponse(await mm.get_budgets(**params))
     except Exception as exc:
@@ -433,6 +452,7 @@ async def api_budgets(request: Request) -> JSONResponse:
 
 async def api_recurring(request: Request) -> JSONResponse:
     try:
+        await _init_monarch()
         params = dict(request.query_params)
         return JSONResponse(await mm.get_recurring_transactions(**params))
     except Exception as exc:
@@ -442,6 +462,7 @@ async def api_recurring(request: Request) -> JSONResponse:
 
 async def api_networth(request: Request) -> JSONResponse:
     try:
+        await _init_monarch()
         params = dict(request.query_params)
         return JSONResponse(await mm.get_aggregate_snapshots(**params))
     except Exception as exc:
@@ -451,6 +472,7 @@ async def api_networth(request: Request) -> JSONResponse:
 
 async def api_update_transaction(request: Request) -> JSONResponse:
     try:
+        await _init_monarch()
         txn_id = request.path_params["id"]
         body = await request.json()
         data = await mm.update_transaction(id=txn_id, **body)
@@ -462,6 +484,7 @@ async def api_update_transaction(request: Request) -> JSONResponse:
 
 async def api_token(request: Request) -> JSONResponse:
     """Return the current Monarch session token (useful for bootstrapping MONARCH_TOKEN)."""
+    await _init_monarch()
     token = getattr(mm, "token", None)
     if token:
         return JSONResponse({"token": token})
@@ -473,7 +496,12 @@ async def api_token(request: Request) -> JSONResponse:
 
 @asynccontextmanager
 async def lifespan(app: Starlette):
-    await _init_monarch()
+    # Try to init at startup — but don't crash the server if it fails.
+    # Each handler will call _init_monarch() lazily on first request.
+    try:
+        await _init_monarch()
+    except Exception as exc:
+        logger.warning("Monarch init failed at startup (will retry on first request): %s", exc)
     yield
 
 
