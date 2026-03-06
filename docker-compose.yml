@@ -3,7 +3,17 @@ services:
     build: .
     ports:
       - "${PORT:-8000}:8000"
-    env_file: .env
+    environment:
+      # Required — Coolify shows these with a red border if empty and blocks deployment
+      - MCP_API_KEY=${MCP_API_KEY:?MCP_API_KEY is required}
+      # Monarch auth: set MONARCH_TOKEN for stateless token auth (preferred),
+      # or set MONARCH_EMAIL + MONARCH_PASSWORD for login-based auth (fallback)
+      - MONARCH_TOKEN=${MONARCH_TOKEN:-}
+      - MONARCH_EMAIL=${MONARCH_EMAIL:-}
+      - MONARCH_PASSWORD=${MONARCH_PASSWORD:-}
+      - MONARCH_MFA_SECRET=${MONARCH_MFA_SECRET:-}
+      # Optional — defaults to 8000
+      - PORT=${PORT:-8000}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
