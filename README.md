@@ -8,57 +8,141 @@ A portable Docker-based server that exposes [Monarch Money](https://www.monarchm
 
 ---
 
-## Quick Start
+## Getting Started
+
+### Step 1 — Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) and Docker Compose installed
+- A [Monarch Money](https://www.monarchmoney.com) account
+
+### Step 2 — Generate your API key
+
+This is the key that protects all endpoints. Generate one now and keep it handy:
+
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+Copy the output — you'll use it as `MCP_API_KEY` in the next step.
+
+### Step 3 — Create your `.env` file
 
 ```bash
 cp .env.example .env
-# Edit .env with your credentials
+```
+
+Open `.env` and fill it in. There are two ways to authenticate with Monarch:
+
+---
+
+#### Option A — Email + Password (easiest to start)
+
+If you don't have a Monarch token yet, just use your login credentials:
+
+```env
+MCP_API_KEY=your-generated-key-here
+MONARCH_EMAIL=you@example.com
+MONARCH_PASSWORD=your-monarch-password
+```
+
+If your account has **2FA enabled**, you also need to add `MONARCH_MFA_SECRET` — see the [2FA setup section](#2fa--totp-setup) below before continuing.
+
+Start the server:
+
+```bash
 docker compose up -d
 ```
+
+Then grab your token so you can switch to Option B (recommended for long-term use):
+
+```bash
+curl -H "Authorization: Bearer your-generated-key-here" http://localhost:8000/api/token
+```
+
+You'll get back:
+```json
+{ "token": "5de1575d9833c4eb..." }
+```
+
+Copy that token value and set it as `MONARCH_TOKEN` in your `.env` — then you can remove `MONARCH_EMAIL` and `MONARCH_PASSWORD`.
+
+---
+
+#### Option B — Token only (recommended for long-term / production)
+
+Once you have your Monarch token (from Option A above, or extracted from your browser), set it directly:
+
+```env
+MCP_API_KEY=your-generated-key-here
+MONARCH_TOKEN=5de1575d9833c4eb...
+```
+
+The server uses the token directly and never makes a login call — this is stateless and works perfectly across container restarts.
+
+> **Where to find your token in a browser:** Open Monarch Money → DevTools (F12) → Application tab → Local Storage → look for a key containing `token`. Or: Network tab → any API request → copy the `Authorization: Token ...` header value.
+
+---
+
+### Step 4 — Start the server
+
+```bash
+docker compose up -d
+```
+
+### Step 5 — Verify it's working
+
+```bash
+# Health check (no auth needed)
+curl http://localhost:8000/health
+
+# Fetch your accounts (replace with your MCP_API_KEY)
+curl -H "Authorization: Bearer your-generated-key-here" http://localhost:8000/api/accounts
+```
+
+You should see `{"status": "ok"}` and a JSON list of your accounts. If you do, you're good to go.
+
+---
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |---|---|---|
-| `MCP_API_KEY` | ✅ Yes | Long random string protecting all endpoints |
+| `MCP_API_KEY` | ✅ Yes | Protects all endpoints — generate with `secrets.token_hex(32)` |
 | `MONARCH_TOKEN` | Either/Or | Monarch bearer token (stateless, preferred) |
 | `MONARCH_EMAIL` | Either/Or | Email for login fallback |
 | `MONARCH_PASSWORD` | Either/Or | Password for login fallback |
 | `MONARCH_MFA_SECRET` | If 2FA enabled | TOTP Base32 secret key (see below) |
 | `PORT` | No | Port to listen on (default: `8000`) |
 
-### Auth Strategy
-
-**Option A — Token (preferred):**
-Set `MONARCH_TOKEN` to your current Monarch bearer token. The server passes it directly without making a login call. Tokens last a long time; refresh as needed by hitting `GET /api/token` after a fresh login.
-
-**Option B — Email/Password:**
-Set `MONARCH_EMAIL` + `MONARCH_PASSWORD`. The server logs in on startup and caches the session in memory.
+You need **either** `MONARCH_TOKEN` **or** both `MONARCH_EMAIL` + `MONARCH_PASSWORD`. Token is preferred — it's faster and stateless.
 
 ---
 
 ## 2FA / TOTP Setup
 
-If your Monarch account has two-factor authentication enabled, you must provide the **raw Base32 secret key** — NOT the 6-digit rotating code.
+If your Monarch account has two-factor authentication enabled, you must provide the **raw Base32 secret key** — NOT the 6-digit rotating code you type when logging in.
 
 ### Finding your TOTP secret
 
-**From a password manager (e.g. 1Password):**
-1. Open your Monarch login entry
+**From a password manager (e.g. 1Password, Bitwarden):**
+1. Open your Monarch Money login entry
 2. Click **Edit**
-3. Find the OTP field → **Copy Secret Key**
-4. It looks like: `JBSWY3DPEHPK3PXP` (uppercase Base32, ~20–32 characters)
+3. Find the OTP / Authenticator field → **Copy Secret Key**
+4. It looks like: `JBSWY3DPEHPK3PXP` (uppercase letters and numbers, ~20–32 characters)
 
-**From Monarch directly:**
+**From Monarch directly (requires disabling and re-enabling 2FA):**
 1. Go to **Settings → Security → Two-factor authentication**
-2. When re-enabling 2FA, the setup screen shows a "two-factor text code" — that's the raw seed
+2. Click **Disable**, then re-enable it
+3. On the setup screen, Monarch shows a "two-factor text code" — that's the raw seed
 
-Set it in `.env`:
-```
+Add it to `.env`:
+```env
 MONARCH_MFA_SECRET=JBSWY3DPEHPK3PXP
 ```
 
-The server uses the [`monarchmoney`](https://github.com/hammem/monarchmoney) library, which auto-computes the 6-digit TOTP code from the secret key — no manual code entry needed.
+The server uses the [`monarchmoney`](https://github.com/hammem/monarchmoney) library to auto-compute the 6-digit TOTP code from the secret — you never need to type the 6-digit code manually.
+
+> **Important:** `MONARCH_MFA_SECRET` is only needed when using email/password login (Option A). If you're using `MONARCH_TOKEN` directly, 2FA is already baked into the token and this variable is not needed.
 
 ---
 
@@ -346,4 +430,3 @@ This server is Coolify-ready. The `docker-compose.yml` uses an `environment:` bl
 2. Point it at this repository
 3. Set your environment variables in the Coolify UI (`MCP_API_KEY` is required; others are optional with sensible defaults)
 4. Deploy — Coolify's Traefik proxy handles HTTPS automatically
-
