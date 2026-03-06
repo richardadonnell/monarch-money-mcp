@@ -29,10 +29,10 @@ docker compose up -d
 
 ### Auth Strategy
 
-**Option A — Token (preferred):**  
+**Option A — Token (preferred):**
 Set `MONARCH_TOKEN` to your current Monarch bearer token. The server passes it directly without making a login call. Tokens last a long time; refresh as needed by hitting `GET /api/token` after a fresh login.
 
-**Option B — Email/Password:**  
+**Option B — Email/Password:**
 Set `MONARCH_EMAIL` + `MONARCH_PASSWORD`. The server logs in on startup and caches the session in memory.
 
 ---
