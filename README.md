@@ -458,3 +458,9 @@ This server is Coolify-ready. The `docker-compose.yml` uses an `environment:` bl
 2. Point it at this repository
 3. Set your environment variables in the Coolify UI (`MCP_API_KEY` is required; others are optional with sensible defaults)
 4. Deploy — Coolify's Traefik proxy handles HTTPS automatically
+
+---
+
+## Acknowledgments
+
+This project is built on top of [monarchmoney](https://github.com/hammem/monarchmoney) by [@hammem](https://github.com/hammem) — the Python client library that handles all Monarch Money API communication. None of this would be possible without that work.
