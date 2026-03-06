@@ -2,7 +2,7 @@ services:
   monarch-mcp:
     build: .
     ports:
-      - "${PORT:-8000}:8000"
+      - "${PORT:-8000}:${PORT:-8000}"
     env_file:
       - path: .env
         required: false   # optional — local users can use .env; Coolify injects vars directly
@@ -19,7 +19,7 @@ services:
       - PORT=${PORT:-8000}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:' + __import__('os').environ.get('PORT','8000') + '/health')\""]
       interval: 30s
       timeout: 5s
       retries: 3
