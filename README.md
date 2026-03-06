@@ -60,6 +60,7 @@ curl -H "Authorization: Bearer your-generated-key-here" http://localhost:8000/ap
 ```
 
 You'll get back:
+
 ```json
 { "token": "5de1575d9833c4eb..." }
 ```
@@ -125,17 +126,20 @@ If your Monarch account has two-factor authentication enabled, you must provide 
 ### Finding your TOTP secret
 
 **From a password manager (e.g. 1Password, Bitwarden):**
+
 1. Open your Monarch Money login entry
 2. Click **Edit**
 3. Find the OTP / Authenticator field → **Copy Secret Key**
 4. It looks like: `JBSWY3DPEHPK3PXP` (uppercase letters and numbers, ~20–32 characters)
 
 **From Monarch directly (requires disabling and re-enabling 2FA):**
+
 1. Go to **Settings → Security → Two-factor authentication**
 2. Click **Disable**, then re-enable it
 3. On the setup screen, Monarch shows a "two-factor text code" — that's the raw seed
 
 Add it to `.env`:
+
 ```env
 MONARCH_MFA_SECRET=JBSWY3DPEHPK3PXP
 ```
@@ -153,7 +157,9 @@ All endpoints require: `Authorization: Bearer {MCP_API_KEY}` except `/health`.
 ---
 
 ### `GET /health`
+
 Unauthenticated health check.
+
 ```json
 { "status": "ok" }
 ```
@@ -161,6 +167,7 @@ Unauthenticated health check.
 ---
 
 ### `GET /api/accounts`
+
 All accounts with current balances, types, and metadata.
 
 No query parameters.
@@ -168,6 +175,7 @@ No query parameters.
 ---
 
 ### `GET /api/transactions`
+
 Transactions with optional filtering.
 
 | Parameter | Type | Default | Description |
@@ -185,6 +193,7 @@ Transactions with optional filtering.
 | `is_recurring` | boolean | — | Filter recurring transactions |
 
 Example:
+
 ```
 GET /api/transactions?limit=50&start_date=2026-03-01&end_date=2026-03-31&search=Netflix
 ```
@@ -192,6 +201,7 @@ GET /api/transactions?limit=50&start_date=2026-03-01&end_date=2026-03-31&search=
 ---
 
 ### `GET /api/cashflow`
+
 Detailed cashflow breakdown by category for a period.
 
 | Parameter | Type | Description |
@@ -202,6 +212,7 @@ Detailed cashflow breakdown by category for a period.
 ---
 
 ### `GET /api/budgets`
+
 Budget categories with planned amounts and actual spending.
 
 | Parameter | Type | Description |
@@ -212,6 +223,7 @@ Budget categories with planned amounts and actual spending.
 ---
 
 ### `GET /api/recurring`
+
 Recurring transactions and subscriptions.
 
 | Parameter | Type | Description |
@@ -222,6 +234,7 @@ Recurring transactions and subscriptions.
 ---
 
 ### `GET /api/networth`
+
 Historical net worth snapshots (wraps `get_aggregate_snapshots`).
 
 | Parameter | Type | Description |
@@ -232,11 +245,13 @@ Historical net worth snapshots (wraps `get_aggregate_snapshots`).
 ---
 
 ### `POST /api/transaction/{id}`
+
 Update a transaction's category, notes, or flags.
 
 **Path parameter:** `id` — the Monarch transaction ID
 
 **JSON body** (all fields optional):
+
 ```json
 {
   "category_id": "string",
@@ -249,9 +264,11 @@ Update a transaction's category, notes, or flags.
 ---
 
 ### `GET /api/token`
+
 Return the current Monarch session token. Useful for bootstrapping `MONARCH_TOKEN` after an initial email/password login.
 
 Requires auth. Returns:
+
 ```json
 { "token": "5de1575d..." }
 ```
@@ -263,6 +280,7 @@ Requires auth. Returns:
 ---
 
 ### `get_accounts`
+
 Return all Monarch Money accounts with current balances, types, and metadata.
 
 No parameters.
@@ -270,6 +288,7 @@ No parameters.
 ---
 
 ### `get_transactions`
+
 Return transactions with optional filtering.
 
 | Parameter | Type | Default | Description |
@@ -289,6 +308,7 @@ Return transactions with optional filtering.
 ---
 
 ### `get_cashflow_summary`
+
 Return cashflow totals — income, expenses, and savings rate — for a period.
 
 | Parameter | Type | Default | Description |
@@ -299,6 +319,7 @@ Return cashflow totals — income, expenses, and savings rate — for a period.
 ---
 
 ### `get_cashflow`
+
 Return detailed cashflow breakdown by category.
 
 | Parameter | Type | Description |
@@ -309,6 +330,7 @@ Return detailed cashflow breakdown by category.
 ---
 
 ### `get_budgets`
+
 Return budget categories with planned amounts and actual spending.
 
 | Parameter | Type | Description |
@@ -319,6 +341,7 @@ Return budget categories with planned amounts and actual spending.
 ---
 
 ### `get_recurring_transactions`
+
 Return recurring transactions and subscriptions.
 
 | Parameter | Type | Description |
@@ -329,6 +352,7 @@ Return recurring transactions and subscriptions.
 ---
 
 ### `get_account_holdings`
+
 Return current holdings for an investment account.
 
 | Parameter | Type | Required | Description |
@@ -338,6 +362,7 @@ Return current holdings for an investment account.
 ---
 
 ### `get_net_worth_history`
+
 Return historical net worth snapshots.
 
 | Parameter | Type | Description |
@@ -348,6 +373,7 @@ Return historical net worth snapshots.
 ---
 
 ### `get_transaction_categories`
+
 Return all transaction categories with IDs. Use IDs with `get_transactions` filters or `set_budget_amount`.
 
 No parameters.
@@ -355,6 +381,7 @@ No parameters.
 ---
 
 ### `update_transaction`
+
 Update a transaction's category, notes, or flags. All fields except `transaction_id` are optional.
 
 | Parameter | Type | Required | Description |
@@ -368,6 +395,7 @@ Update a transaction's category, notes, or flags. All fields except `transaction
 ---
 
 ### `set_budget_amount`
+
 Set the monthly budget amount for a category.
 
 | Parameter | Type | Required | Description |
