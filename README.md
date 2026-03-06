@@ -1,9 +1,9 @@
 # Monarch Money MCP Server
 
-A portable Docker-based server that exposes Monarch Money data via two protocols:
+A portable Docker-based server that exposes [Monarch Money](https://www.monarchmoney.com) personal finance data via two protocols simultaneously:
 
-- **`/mcp`** — FastMCP streamable-HTTP for Claude Desktop / Allen (MCP protocol)
-- **`/api/*`** — Plain REST endpoints for n8n HTTP Request nodes
+- **`/mcp`** — FastMCP streamable-HTTP for AI assistants that support the MCP protocol (Claude Desktop, etc.)
+- **`/api/*`** — Plain REST endpoints for automation tools like n8n, Zapier, or custom scripts
 - **`/health`** — Unauthenticated health check
 
 ---
@@ -39,27 +39,26 @@ Set `MONARCH_EMAIL` + `MONARCH_PASSWORD`. The server logs in on startup and cach
 
 ## 2FA / TOTP Setup
 
-If your Monarch account has two-factor authentication (TOTP) enabled, you must provide the **raw Base32 secret key** — NOT the 6-digit rotating code.
+If your Monarch account has two-factor authentication enabled, you must provide the **raw Base32 secret key** — NOT the 6-digit rotating code.
 
 ### Finding your TOTP secret
 
-**From 1Password:**
-1. Open your Monarch login entry in 1Password
+**From a password manager (e.g. 1Password):**
+1. Open your Monarch login entry
 2. Click **Edit**
-3. Find the OTP field
-4. Click the three dots → **Copy Secret Key**
-5. It looks like: `JBSWY3DPEHPK3PXP` (uppercase Base32, ~20–32 characters)
+3. Find the OTP field → **Copy Secret Key**
+4. It looks like: `JBSWY3DPEHPK3PXP` (uppercase Base32, ~20–32 characters)
 
 **From Monarch directly:**
 1. Go to **Settings → Security → Two-factor authentication**
-2. If you're re-enabling 2FA, the setup screen shows a "two-factor text code" — that's the raw seed
+2. When re-enabling 2FA, the setup screen shows a "two-factor text code" — that's the raw seed
 
 Set it in `.env`:
 ```
 MONARCH_MFA_SECRET=JBSWY3DPEHPK3PXP
 ```
 
-The server uses the [`monarchmoney`](https://github.com/hammem/monarchmoney) library which calls `oathtool` internally to compute the current 6-digit code from the secret — no manual code entry needed.
+The server uses the [`monarchmoney`](https://github.com/hammem/monarchmoney) library, which auto-computes the 6-digit TOTP code from the secret key — no manual code entry needed.
 
 ---
 
@@ -81,7 +80,7 @@ All endpoints require: `Authorization: Bearer {MCP_API_KEY}`
 
 ---
 
-## MCP Tools (for Allen / Claude Desktop)
+## MCP Tools
 
 | Tool | Description |
 |---|---|
@@ -101,18 +100,28 @@ All endpoints require: `Authorization: Bearer {MCP_API_KEY}`
 
 ## Claude Desktop Config
 
+Add this to your `claude_desktop_config.json`. Since Claude Desktop requires stdio-based MCP entries, use [`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy) as a bridge:
+
 ```json
 {
   "mcpServers": {
-    "monarch_money": {
-      "url": "http://localhost:8000/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_MCP_API_KEY"
+    "monarch-money": {
+      "command": "uvx",
+      "args": [
+        "mcp-proxy",
+        "--transport",
+        "streamablehttp",
+        "http://localhost:8000/mcp"
+      ],
+      "env": {
+        "API_ACCESS_TOKEN": "YOUR_MCP_API_KEY"
       }
     }
   }
 }
 ```
+
+> `uvx` is bundled with [uv](https://github.com/astral-sh/uv). Install it with `pip install uv` or `brew install uv`.
 
 ---
 
@@ -130,3 +139,15 @@ All endpoints require: `Authorization: Bearer {MCP_API_KEY}`
 ```bash
 python -c "import secrets; print(secrets.token_hex(32))"
 ```
+
+---
+
+## Coolify Deployment
+
+This server is Coolify-ready. The `docker-compose.yml` uses an `environment:` block with `${VAR}` substitution — Coolify detects these and surfaces them in its Environment Variables UI. No `.env` file needed on the server.
+
+1. Create a new Coolify resource → **Docker Compose**
+2. Point it at this repository
+3. Set your environment variables in the Coolify UI (`MCP_API_KEY` is required; others are optional with sensible defaults)
+4. Deploy — Coolify's Traefik proxy handles HTTPS automatically
+
