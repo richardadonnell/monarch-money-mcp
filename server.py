@@ -1,1 +1,505 @@
-"""\nMonarch Money MCP Server\n========================\nDual-protocol server:\n  - /mcp  → FastMCP streamable-HTTP (for Claude Desktop / Allen)\n  - /api/* → Plain REST endpoints  (for n8n HTTP Request nodes)\n  - /health → Unauthenticated health check\n\nAuth: Authorization: Bearer {MCP_API_KEY} on every route except /health.\n\nEnv vars:\n  MONARCH_TOKEN    – preferred; inject the Monarch bearer token directly\n  MONARCH_EMAIL    – fallback: email for initial login\n  MONARCH_PASSWORD – fallback: password for initial login\n  MCP_API_KEY      – required; protects all endpoints\n  PORT             – optional, defaults to 8000\n"""\n\nfrom __future__ import annotations\n\nimport json\nimport logging\nimport os\nfrom contextlib import asynccontextmanager\nfrom typing import Any, Optional\n\nimport uvicorn\nfrom fastmcp import FastMCP\nfrom monarchmoney import MonarchMoney\nfrom starlette.applications import Starlette\nfrom starlette.middleware.base import BaseHTTPMiddleware\nfrom starlette.requests import Request\nfrom starlette.responses import JSONResponse\nfrom starlette.routing import Mount, Route\n\nlogging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")\nlogger = logging.getLogger("monarch_mcp")\n\n# ─── Config ───────────────────────────────────────────────────────────────────\n\nMCP_API_KEY: str = os.environ["MCP_API_KEY"]          # required\nMONARCH_TOKEN: str | None = os.getenv("MONARCH_TOKEN")\nMONARCH_EMAIL: str | None = os.getenv("MONARCH_EMAIL")\nMONARCH_PASSWORD: str | None = os.getenv("MONARCH_PASSWORD")\nPORT: int = int(os.getenv("PORT", "8000"))\n\n# ─── Monarch client (module-level singleton) ──────────────────────────────────\n\nmm = MonarchMoney()\n\n\nasync def _init_monarch() -> None:\n    \"\"\"Authenticate the Monarch Money client from env vars.\"\"\"\n    if MONARCH_TOKEN:\n        mm.token = MONARCH_TOKEN\n        logger.info("Monarch: using token from MONARCH_TOKEN env var (stateless)")\n    elif MONARCH_EMAIL and MONARCH_PASSWORD:\n        await mm.login(MONARCH_EMAIL, MONARCH_PASSWORD)\n        logger.info("Monarch: logged in with MONARCH_EMAIL / MONARCH_PASSWORD")\n    else:\n        raise RuntimeError(\n            "Set MONARCH_TOKEN or both MONARCH_EMAIL and MONARCH_PASSWORD"\n        )\n\n\ndef _json(data: Any) -> str:\n    return json.dumps(data, default=str, indent=2)\n\n\n# ─── FastMCP instance ─────────────────────────────────────────────────────────\n\nmcp = FastMCP(\n    \"monarch_money_mcp\",\n    instructions=(\n        \"Tools for querying Monarch Money personal finance data: accounts, balances, \"\n        \"transactions, cashflow, budgets, net worth, recurring subscriptions, and \"\n        \"investment holdings. Use ISO 8601 dates (YYYY-MM-DD) for all date parameters. \"\n        \"Default date range when unspecified: current calendar month.\"\n    ),\n)\n\n# ─── MCP Tools ────────────────────────────────────────────────────────────────\n\n\n@mcp.tool(\n    name=\"get_accounts\",\n    annotations={\"readOnlyHint\": True, \"destructiveHint\": False},\n)\nasync def get_accounts() -> str:\n    \"\"\"Return all Monarch Money accounts with current balances, types, and metadata.\"\"\"\n    data = await mm.get_accounts()\n    return _json(data)\n\n\n@mcp.tool(\n    name=\"get_transactions\",\n    annotations={\"readOnlyHint\": True, \"destructiveHint\": False},\n)\nasync def get_transactions(\n    limit: int = 100,\n    start_date: Optional[str] = None,\n    end_date: Optional[str] = None,\n    search: Optional[str] = None,\n    category_ids: Optional[list[str]] = None,\n    account_ids: Optional[list[str]] = None,\n    tag_ids: Optional[list[str]] = None,\n    hide_duplicates: Optional[bool] = None,\n    has_attachments: Optional[bool] = None,\n    has_notes: Optional[bool] = None,\n    is_split: Optional[bool] = None,\n    is_recurring: Optional[bool] = None,\n) -> str:\n    \"\"\"\n    Return transactions with optional filtering.\n\n    Args:\n        limit: Maximum number of transactions (default 100, max 500).\n        start_date: Filter from this date inclusive (YYYY-MM-DD).\n        end_date: Filter to this date inclusive (YYYY-MM-DD).\n        search: Free-text search across merchant name / description.\n        category_ids: Restrict to these category IDs.\n        account_ids: Restrict to these account IDs.\n        tag_ids: Restrict to these tag IDs.\n        hide_duplicates: Exclude duplicate transactions when True.\n        has_attachments: Filter by attachment presence.\n        has_notes: Filter by note presence.\n        is_split: Filter split transactions.\n        is_recurring: Filter recurring transactions.\n    \"\"\"\n    kwargs: dict[str, Any] = {\"limit\": limit}\n    for k, v in {\n        \"start_date\": start_date,\n        \"end_date\": end_date,\n        \"search\": search,\n        \"category_ids\": category_ids,\n        \"account_ids\": account_ids,\n        \"tag_ids\": tag_ids,\n        \"hide_duplicates\": hide_duplicates,\n        \"has_attachments\": has_attachments,\n        \"has_notes\": has_notes,\n        \"is_split\": is_split,\n        \"is_recurring\": is_recurring,\n    }.items():\n        if v is not None:\n            kwargs[k] = v\n    data = await mm.get_transactions(**kwargs)\n    return _json(data)\n\n\n@mcp.tool(\n    name=\"get_cashflow_summary\",\n    annotations={\"readOnlyHint\": True, \"destructiveHint\": False},\n)\nasync def get_cashflow_summary(\n    start_date: Optional[str] = None,\n    end_date: Optional[str] = None,\n) -> str:\n    \"\"\"\n    Return cashflow totals (income, expenses, savings rate) for a period.\n\n    Args:\n        start_date: Period start (YYYY-MM-DD), defaults to first of current month.\n        end_date: Period end (YYYY-MM-DD), defaults to today.\n    \"\"\"\n    kwargs: dict[str, Any] = {}\n    if start_date:\n        kwargs[\"start_date\"] = start_date\n    if end_date:\n        kwargs[\"end_date\"] = end_date\n    data = await mm.get_cashflow_summary(**kwargs)\n    return _json(data)\n\n\n@mcp.tool(\n    name=\"get_cashflow\",\n    annotations={\"readOnlyHint\": True, \"destructiveHint\": False},\n)\nasync def get_cashflow(\n    start_date: Optional[str] = None,\n    end_date: Optional[str] = None,\n) -> str:\n    \"\"\"\n    Return detailed cashflow breakdown by category.\n\n    Args:\n        start_date: Period start (YYYY-MM-DD).\n        end_date: Period end (YYYY-MM-DD).\n    \"\"\"\n    kwargs: dict[str, Any] = {}\n    if start_date:\n        kwargs[\"start_date\"] = start_date\n    if end_date:\n        kwargs[\"end_date\"] = end_date\n    data = await mm.get_cashflow(**kwargs)\n    return _json(data)\n\n\n@mcp.tool(\n    name=\"get_budgets\",\n    annotations={\"readOnlyHint\": True, \"destructiveHint\": False},\n)\nasync def get_budgets(\n    start_date: Optional[str] = None,\n    end_date: Optional[str] = None,\n) -> str:\n    \"\"\"\n    Return budget categories with planned amounts and actual spending.\n\n    Args:\n        start_date: Budget period start (YYYY-MM-DD).\n        end_date: Budget period end (YYYY-MM-DD).\n    \"\"\"\n    kwargs: dict[str, Any] = {}\n    if start_date:\n        kwargs[\"start_date\"] = start_date\n    if end_date:\n        kwargs[\"end_date\"] = end_date\n    data = await mm.get_budgets(**kwargs)\n    return _json(data)\n\n\n@mcp.tool(\n    name=\"get_recurring_transactions\",\n    annotations={\"readOnlyHint\": True, \"destructiveHint\": False},\n)\nasync def get_recurring_transactions(\n    start_date: Optional[str] = None,\n    end_date: Optional[str] = None,\n) -> str:\n    \"\"\"\n    Return recurring transactions and subscriptions.\n\n    Args:\n        start_date: Period start (YYYY-MM-DD).\n        end_date: Period end (YYYY-MM-DD).\n    \"\"\"\n    kwargs: dict[str, Any] = {}\n    if start_date:\n        kwargs[\"start_date\"] = start_date\n    if end_date:\n        kwargs[\"end_date\"] = end_date\n    data = await mm.get_recurring_transactions(**kwargs)\n    return _json(data)\n\n\n@mcp.tool(\n    name=\"get_account_holdings\",\n    annotations={\"readOnlyHint\": True, \"destructiveHint\": False},\n)\nasync def get_account_holdings(account_id: str) -> str:\n    \"\"\"\n    Return current holdings for an investment account.\n\n    Args:\n        account_id: The Monarch account ID (get from get_accounts first).\n    \"\"\"\n    data = await mm.get_account_holdings(account_id)\n    return _json(data)\n\n\n@mcp.tool(\n    name=\"get_net_worth_history\",\n    annotations={\"readOnlyHint\": True, \"destructiveHint\": False},\n)\nasync def get_net_worth_history(\n    start_date: Optional[str] = None,\n    end_date: Optional[str] = None,\n) -> str:\n    \"\"\"\n    Return historical net worth snapshots (uses get_aggregate_snapshots under the hood).\n\n    Args:\n        start_date: History start date (YYYY-MM-DD).\n        end_date: History end date (YYYY-MM-DD).\n    \"\"\"\n    kwargs: dict[str, Any] = {}\n    if start_date:\n        kwargs[\"start_date\"] = start_date\n    if end_date:\n        kwargs[\"end_date\"] = end_date\n    data = await mm.get_aggregate_snapshots(**kwargs)\n    return _json(data)\n\n\n@mcp.tool(\n    name=\"get_transaction_categories\",\n    annotations={\"readOnlyHint\": True, \"destructiveHint\": False},\n)\nasync def get_transaction_categories() -> str:\n    \"\"\"Return all transaction categories with IDs. Use IDs with get_transactions filters or set_budget_amount.\"\"\"\n    data = await mm.get_transaction_categories()\n    return _json(data)\n\n\n@mcp.tool(\n    name=\"update_transaction\",\n    annotations={\"readOnlyHint\": False, \"destructiveHint\": False, \"idempotentHint\": True},\n)\nasync def update_transaction(\n    transaction_id: str,\n    category_id: Optional[str] = None,\n    notes: Optional[str] = None,\n    hide_from_reports: Optional[bool] = None,\n    needs_review: Optional[bool] = None,\n) -> str:\n    \"\"\"\n    Update a transaction's category, notes, or flags.\n\n    Args:\n        transaction_id: The transaction ID to update.\n        category_id: New category ID (get IDs from get_transaction_categories).\n        notes: Free-text notes / memo.\n        hide_from_reports: Exclude this transaction from spending reports.\n        needs_review: Flag the transaction as needing review.\n    \"\"\"\n    kwargs: dict[str, Any] = {\"id\": transaction_id}\n    for k, v in {\n        \"category_id\": category_id,\n        \"notes\": notes,\n        \"hide_from_reports\": hide_from_reports,\n        \"needs_review\": needs_review,\n    }.items():\n        if v is not None:\n            kwargs[k] = v\n    data = await mm.update_transaction(**kwargs)\n    return _json(data)\n\n\n@mcp.tool(\n    name=\"set_budget_amount\",\n    annotations={\"readOnlyHint\": False, \"destructiveHint\": False, \"idempotentHint\": True},\n)\nasync def set_budget_amount(\n    amount: float,\n    category_id: str,\n    start_date: str,\n) -> str:\n    \"\"\"\n    Set the monthly budget for a category.\n\n    Args:\n        amount: Budget amount in USD.\n        category_id: Category ID (get from get_transaction_categories).\n        start_date: First day of the target month (YYYY-MM-01).\n    \"\"\"\n    data = await mm.set_budget_amount(\n        amount=amount, category_id=category_id, start_date=start_date\n    )\n    return _json(data)\n\n\n# ─── Auth Middleware ──────────────────────────────────────────────────────────\n\n\nclass APIKeyMiddleware(BaseHTTPMiddleware):\n    async def dispatch(self, request: Request, call_next):\n        # Health check is always public\n        if request.url.path == \"/health\":\n            return await call_next(request)\n        auth = request.headers.get(\"Authorization\", \"\")\n        if not (auth.startswith(\"Bearer \") and auth[7:] == MCP_API_KEY):\n            return JSONResponse({\"error\": \"Unauthorized\"}, status_code=401)\n        return await call_next(request)\n\n\n# ─── REST Route Handlers ──────────────────────────────────────────────────────\n\n\nasync def health(request: Request) -> JSONResponse:\n    return JSONResponse({\"status\": \"ok\"})\n\n\nasync def api_accounts(request: Request) -> JSONResponse:\n    try:\n        return JSONResponse(await mm.get_accounts())\n    except Exception as exc:\n        logger.error(\"api_accounts: %s\", exc)\n        return JSONResponse({\"error\": str(exc)}, status_code=500)\n\n\nasync def api_transactions(request: Request) -> JSONResponse:\n    try:\n        params = dict(request.query_params)\n        limit = int(params.pop(\"limit\", 100))\n        return JSONResponse(await mm.get_transactions(limit=limit, **params))\n    except Exception as exc:\n        logger.error(\"api_transactions: %s\", exc)\n        return JSONResponse({\"error\": str(exc)}, status_code=500)\n\n\nasync def api_cashflow(request: Request) -> JSONResponse:\n    try:\n        params = dict(request.query_params)\n        return JSONResponse(await mm.get_cashflow(**params))\n    except Exception as exc:\n        logger.error(\"api_cashflow: %s\", exc)\n        return JSONResponse({\"error\": str(exc)}, status_code=500)\n\n\nasync def api_budgets(request: Request) -> JSONResponse:\n    try:\n        params = dict(request.query_params)\n        return JSONResponse(await mm.get_budgets(**params))\n    except Exception as exc:\n        logger.error(\"api_budgets: %s\", exc)\n        return JSONResponse({\"error\": str(exc)}, status_code=500)\n\n\nasync def api_recurring(request: Request) -> JSONResponse:\n    try:\n        params = dict(request.query_params)\n        return JSONResponse(await mm.get_recurring_transactions(**params))\n    except Exception as exc:\n        logger.error(\"api_recurring: %s\", exc)\n        return JSONResponse({\"error\": str(exc)}, status_code=500)\n\n\nasync def api_networth(request: Request) -> JSONResponse:\n    try:\n        params = dict(request.query_params)\n        return JSONResponse(await mm.get_aggregate_snapshots(**params))\n    except Exception as exc:\n        logger.error(\"api_networth: %s\", exc)\n        return JSONResponse({\"error\": str(exc)}, status_code=500)\n\n\nasync def api_update_transaction(request: Request) -> JSONResponse:\n    try:\n        txn_id = request.path_params[\"id\"]\n        body = await request.json()\n        data = await mm.update_transaction(id=txn_id, **body)\n        return JSONResponse(data)\n    except Exception as exc:\n        logger.error(\"api_update_transaction: %s\", exc)\n        return JSONResponse({\"error\": str(exc)}, status_code=500)\n\n\nasync def api_token(request: Request) -> JSONResponse:\n    \"\"\"Return the current Monarch session token (useful for bootstrapping MONARCH_TOKEN).\"\"\"\n    token = getattr(mm, \"token\", None)\n    if token:\n        return JSONResponse({\"token\": token})\n    return JSONResponse({\"error\": \"No token available — login first\"}, status_code=404)\n\n\n# ─── App Assembly ─────────────────────────────────────────────────────────────\n\n\n@asynccontextmanager\nasync def lifespan(app: Starlette):\n    await _init_monarch()\n    yield\n\n\n# FastMCP 2.x: http_app() returns a Starlette ASGI app that handles the /mcp endpoint.\n# We mount it at \"/\" as a catch-all so our specific routes above take priority.\nmcp_asgi = mcp.http_app()\n\napp = Starlette(\n    routes=[\n        Route(\"/health\", endpoint=health, methods=[\"GET\"]),\n        # REST endpoints for n8n\n        Route(\"/api/accounts\", endpoint=api_accounts, methods=[\"GET\"]),\n        Route(\"/api/transactions\", endpoint=api_transactions, methods=[\"GET\"]),\n        Route(\"/api/cashflow\", endpoint=api_cashflow, methods=[\"GET\"]),\n        Route(\"/api/budgets\", endpoint=api_budgets, methods=[\"GET\"]),\n        Route(\"/api/recurring\", endpoint=api_recurring, methods=[\"GET\"]),\n        Route(\"/api/networth\", endpoint=api_networth, methods=[\"GET\"]),\n        Route(\"/api/transaction/{id:str}\", endpoint=api_update_transaction, methods=[\"POST\"]),\n        Route(\"/api/token\", endpoint=api_token, methods=[\"GET\"]),\n        # FastMCP MCP protocol — handles /mcp (catch-all after explicit routes)\n        Mount(\"/\", app=mcp_asgi),\n    ],\n    lifespan=lifespan,\n)\n\napp.add_middleware(APIKeyMiddleware)\n\nif __name__ == \"__main__\":\n    uvicorn.run(app, host=\"0.0.0.0\", port=PORT, log_level=\"info\")\n
+"""
+Monarch Money MCP Server
+========================
+Dual-protocol server:
+  - /mcp   FastMCP streamable-HTTP (for Claude Desktop / Allen)
+  - /api/* Plain REST endpoints (for n8n HTTP Request nodes)
+  - /health Unauthenticated health check
+
+Auth: Authorization: Bearer {MCP_API_KEY} on every route except /health.
+
+Env vars:
+  MONARCH_TOKEN      preferred; inject the Monarch bearer token directly (stateless)
+  MONARCH_EMAIL      fallback: email for initial login
+  MONARCH_PASSWORD   fallback: password for initial login
+  MONARCH_MFA_SECRET TOTP secret key for 2FA accounts (Base32 seed, NOT the 6-digit code)
+                     Found in: Monarch Settings -> Security -> MFA -> "Two-factor text code"
+                     Or in 1Password: Edit entry -> OTP field -> Copy Secret Key
+  MCP_API_KEY        required; protects all endpoints
+  PORT               optional, defaults to 8000
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from contextlib import asynccontextmanager
+from typing import Any, Optional
+
+import uvicorn
+from fastmcp import FastMCP
+from monarchmoney import MonarchMoney
+from starlette.applications import Starlette
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Mount, Route
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("monarch_mcp")
+
+# --- Config ------------------------------------------------------------------
+
+MCP_API_KEY: str = os.environ["MCP_API_KEY"]           # required
+MONARCH_TOKEN: str | None = os.getenv("MONARCH_TOKEN")
+MONARCH_EMAIL: str | None = os.getenv("MONARCH_EMAIL")
+MONARCH_PASSWORD: str | None = os.getenv("MONARCH_PASSWORD")
+# Raw TOTP secret key (Base32 seed, NOT the 6-digit code).
+# Get it from: Monarch Settings -> Security -> MFA -> "Two-factor text code"
+# Or from 1Password: Edit the Monarch entry -> OTP field -> Copy Secret Key
+MONARCH_MFA_SECRET: str | None = os.getenv("MONARCH_MFA_SECRET")
+PORT: int = int(os.getenv("PORT", "8000"))
+
+# --- Monarch client (module-level singleton) ----------------------------------
+
+mm = MonarchMoney()
+
+
+async def _init_monarch() -> None:
+    """Authenticate the Monarch Money client from env vars."""
+    if MONARCH_TOKEN:
+        mm.token = MONARCH_TOKEN
+        logger.info("Monarch: using token from MONARCH_TOKEN env var (stateless)")
+        return
+
+    if not (MONARCH_EMAIL and MONARCH_PASSWORD):
+        raise RuntimeError(
+            "Set MONARCH_TOKEN, or set both MONARCH_EMAIL and MONARCH_PASSWORD"
+        )
+
+    try:
+        await mm.login(
+            email=MONARCH_EMAIL,
+            password=MONARCH_PASSWORD,
+            use_saved_session=False,
+            save_session=False,
+            mfa_secret_key=MONARCH_MFA_SECRET,  # None = no 2FA; Base32 secret = auto-TOTP
+        )
+        logger.info("Monarch: logged in with MONARCH_EMAIL / MONARCH_PASSWORD")
+        if MONARCH_MFA_SECRET:
+            logger.info("Monarch: 2FA TOTP generated automatically from MONARCH_MFA_SECRET")
+    except Exception as exc:
+        # RequireMFAException is raised when 2FA is enabled but mfa_secret_key was not given
+        if "RequireMFA" in type(exc).__name__ or "mfa" in str(exc).lower():
+            raise RuntimeError(
+                "Monarch requires 2FA but MONARCH_MFA_SECRET is not set. "
+                "Set it to the Base32 TOTP secret key (NOT the 6-digit code). "
+                "Find it in: Monarch Settings -> Security -> MFA -> 'Two-factor text code', "
+                "or in 1Password: Edit entry -> OTP field -> Copy Secret Key."
+            ) from exc
+        raise
+
+
+def _json(data: Any) -> str:
+    return json.dumps(data, default=str, indent=2)
+
+
+# --- FastMCP instance --------------------------------------------------------
+
+mcp = FastMCP(
+    "monarch_money_mcp",
+    instructions=(
+        "Tools for querying Monarch Money personal finance data: accounts, balances, "
+        "transactions, cashflow, budgets, net worth, recurring subscriptions, and "
+        "investment holdings. Use ISO 8601 dates (YYYY-MM-DD) for all date parameters. "
+        "Default date range when unspecified: current calendar month."
+    ),
+)
+
+# --- MCP Tools ---------------------------------------------------------------
+
+
+@mcp.tool(
+    name="get_accounts",
+    annotations={"readOnlyHint": True, "destructiveHint": False},
+)
+async def get_accounts() -> str:
+    """Return all Monarch Money accounts with current balances, types, and metadata."""
+    data = await mm.get_accounts()
+    return _json(data)
+
+
+@mcp.tool(
+    name="get_transactions",
+    annotations={"readOnlyHint": True, "destructiveHint": False},
+)
+async def get_transactions(
+    limit: int = 100,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    search: Optional[str] = None,
+    category_ids: Optional[list[str]] = None,
+    account_ids: Optional[list[str]] = None,
+    tag_ids: Optional[list[str]] = None,
+    has_attachments: Optional[bool] = None,
+    has_notes: Optional[bool] = None,
+    is_split: Optional[bool] = None,
+    is_recurring: Optional[bool] = None,
+) -> str:
+    """
+    Return transactions with optional filtering.
+
+    Args:
+        limit: Maximum number of transactions (default 100, max 500).
+        start_date: Filter from this date inclusive (YYYY-MM-DD).
+        end_date: Filter to this date inclusive (YYYY-MM-DD).
+        search: Free-text search across merchant name / description.
+        category_ids: Restrict to these category IDs.
+        account_ids: Restrict to these account IDs.
+        tag_ids: Restrict to these tag IDs.
+        has_attachments: Filter by attachment presence.
+        has_notes: Filter by note presence.
+        is_split: Filter split transactions.
+        is_recurring: Filter recurring transactions.
+    """
+    kwargs: dict[str, Any] = {"limit": limit}
+    for k, v in {
+        "start_date": start_date,
+        "end_date": end_date,
+        "search": search,
+        "category_ids": category_ids,
+        "account_ids": account_ids,
+        "tag_ids": tag_ids,
+        "has_attachments": has_attachments,
+        "has_notes": has_notes,
+        "is_split": is_split,
+        "is_recurring": is_recurring,
+    }.items():
+        if v is not None:
+            kwargs[k] = v
+    data = await mm.get_transactions(**kwargs)
+    return _json(data)
+
+
+@mcp.tool(
+    name="get_cashflow_summary",
+    annotations={"readOnlyHint": True, "destructiveHint": False},
+)
+async def get_cashflow_summary(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> str:
+    """
+    Return cashflow totals (income, expenses, savings rate) for a period.
+
+    Args:
+        start_date: Period start (YYYY-MM-DD), defaults to first of current month.
+        end_date: Period end (YYYY-MM-DD), defaults to today.
+    """
+    kwargs: dict[str, Any] = {}
+    if start_date:
+        kwargs["start_date"] = start_date
+    if end_date:
+        kwargs["end_date"] = end_date
+    data = await mm.get_cashflow_summary(**kwargs)
+    return _json(data)
+
+
+@mcp.tool(
+    name="get_cashflow",
+    annotations={"readOnlyHint": True, "destructiveHint": False},
+)
+async def get_cashflow(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> str:
+    """
+    Return detailed cashflow breakdown by category.
+
+    Args:
+        start_date: Period start (YYYY-MM-DD).
+        end_date: Period end (YYYY-MM-DD).
+    """
+    kwargs: dict[str, Any] = {}
+    if start_date:
+        kwargs["start_date"] = start_date
+    if end_date:
+        kwargs["end_date"] = end_date
+    data = await mm.get_cashflow(**kwargs)
+    return _json(data)
+
+
+@mcp.tool(
+    name="get_budgets",
+    annotations={"readOnlyHint": True, "destructiveHint": False},
+)
+async def get_budgets(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> str:
+    """
+    Return budget categories with planned amounts and actual spending.
+
+    Args:
+        start_date: Budget period start (YYYY-MM-DD).
+        end_date: Budget period end (YYYY-MM-DD).
+    """
+    kwargs: dict[str, Any] = {}
+    if start_date:
+        kwargs["start_date"] = start_date
+    if end_date:
+        kwargs["end_date"] = end_date
+    data = await mm.get_budgets(**kwargs)
+    return _json(data)
+
+
+@mcp.tool(
+    name="get_recurring_transactions",
+    annotations={"readOnlyHint": True, "destructiveHint": False},
+)
+async def get_recurring_transactions(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> str:
+    """
+    Return recurring transactions and subscriptions.
+
+    Args:
+        start_date: Period start (YYYY-MM-DD).
+        end_date: Period end (YYYY-MM-DD).
+    """
+    kwargs: dict[str, Any] = {}
+    if start_date:
+        kwargs["start_date"] = start_date
+    if end_date:
+        kwargs["end_date"] = end_date
+    data = await mm.get_recurring_transactions(**kwargs)
+    return _json(data)
+
+
+@mcp.tool(
+    name="get_account_holdings",
+    annotations={"readOnlyHint": True, "destructiveHint": False},
+)
+async def get_account_holdings(account_id: str) -> str:
+    """
+    Return current holdings for an investment account.
+
+    Args:
+        account_id: The Monarch account ID (get from get_accounts first).
+    """
+    data = await mm.get_account_holdings(account_id)
+    return _json(data)
+
+
+@mcp.tool(
+    name="get_net_worth_history",
+    annotations={"readOnlyHint": True, "destructiveHint": False},
+)
+async def get_net_worth_history(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> str:
+    """
+    Return historical net worth snapshots.
+
+    Args:
+        start_date: History start date (YYYY-MM-DD).
+        end_date: History end date (YYYY-MM-DD).
+    """
+    kwargs: dict[str, Any] = {}
+    if start_date:
+        kwargs["start_date"] = start_date
+    if end_date:
+        kwargs["end_date"] = end_date
+    data = await mm.get_aggregate_snapshots(**kwargs)
+    return _json(data)
+
+
+@mcp.tool(
+    name="get_transaction_categories",
+    annotations={"readOnlyHint": True, "destructiveHint": False},
+)
+async def get_transaction_categories() -> str:
+    """Return all transaction categories with IDs. Use IDs with get_transactions filters or set_budget_amount."""
+    data = await mm.get_transaction_categories()
+    return _json(data)
+
+
+@mcp.tool(
+    name="update_transaction",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True},
+)
+async def update_transaction(
+    transaction_id: str,
+    category_id: Optional[str] = None,
+    notes: Optional[str] = None,
+    hide_from_reports: Optional[bool] = None,
+    needs_review: Optional[bool] = None,
+) -> str:
+    """
+    Update a transaction's category, notes, or flags.
+
+    Args:
+        transaction_id: The transaction ID to update.
+        category_id: New category ID (get IDs from get_transaction_categories).
+        notes: Free-text notes / memo.
+        hide_from_reports: Exclude this transaction from spending reports.
+        needs_review: Flag the transaction as needing review.
+    """
+    kwargs: dict[str, Any] = {"id": transaction_id}
+    for k, v in {
+        "category_id": category_id,
+        "notes": notes,
+        "hide_from_reports": hide_from_reports,
+        "needs_review": needs_review,
+    }.items():
+        if v is not None:
+            kwargs[k] = v
+    data = await mm.update_transaction(**kwargs)
+    return _json(data)
+
+
+@mcp.tool(
+    name="set_budget_amount",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True},
+)
+async def set_budget_amount(
+    amount: float,
+    category_id: str,
+    start_date: str,
+) -> str:
+    """
+    Set the monthly budget for a category.
+
+    Args:
+        amount: Budget amount in USD.
+        category_id: Category ID (get from get_transaction_categories).
+        start_date: First day of the target month (YYYY-MM-01).
+    """
+    data = await mm.set_budget_amount(
+        amount=amount, category_id=category_id, start_date=start_date
+    )
+    return _json(data)
+
+
+# --- Auth Middleware ----------------------------------------------------------
+
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Health check is always public
+        if request.url.path == "/health":
+            return await call_next(request)
+        auth = request.headers.get("Authorization", "")
+        if not (auth.startswith("Bearer ") and auth[7:] == MCP_API_KEY):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return await call_next(request)
+
+
+# --- REST Route Handlers -----------------------------------------------------
+
+
+async def health(request: Request) -> JSONResponse:
+    return JSONResponse({"status": "ok"})
+
+
+async def api_accounts(request: Request) -> JSONResponse:
+    try:
+        return JSONResponse(await mm.get_accounts())
+    except Exception as exc:
+        logger.error("api_accounts: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_transactions(request: Request) -> JSONResponse:
+    try:
+        params = dict(request.query_params)
+        limit = int(params.pop("limit", 100))
+        return JSONResponse(await mm.get_transactions(limit=limit, **params))
+    except Exception as exc:
+        logger.error("api_transactions: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_cashflow(request: Request) -> JSONResponse:
+    try:
+        params = dict(request.query_params)
+        return JSONResponse(await mm.get_cashflow(**params))
+    except Exception as exc:
+        logger.error("api_cashflow: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_budgets(request: Request) -> JSONResponse:
+    try:
+        params = dict(request.query_params)
+        return JSONResponse(await mm.get_budgets(**params))
+    except Exception as exc:
+        logger.error("api_budgets: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_recurring(request: Request) -> JSONResponse:
+    try:
+        params = dict(request.query_params)
+        return JSONResponse(await mm.get_recurring_transactions(**params))
+    except Exception as exc:
+        logger.error("api_recurring: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_networth(request: Request) -> JSONResponse:
+    try:
+        params = dict(request.query_params)
+        return JSONResponse(await mm.get_aggregate_snapshots(**params))
+    except Exception as exc:
+        logger.error("api_networth: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_update_transaction(request: Request) -> JSONResponse:
+    try:
+        txn_id = request.path_params["id"]
+        body = await request.json()
+        data = await mm.update_transaction(id=txn_id, **body)
+        return JSONResponse(data)
+    except Exception as exc:
+        logger.error("api_update_transaction: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_token(request: Request) -> JSONResponse:
+    """Return the current Monarch session token (useful for bootstrapping MONARCH_TOKEN)."""
+    token = getattr(mm, "token", None)
+    if token:
+        return JSONResponse({"token": token})
+    return JSONResponse({"error": "No token available - login first"}, status_code=404)
+
+
+# --- App Assembly ------------------------------------------------------------
+
+
+@asynccontextmanager
+async def lifespan(app: Starlette):
+    await _init_monarch()
+    yield
+
+
+# FastMCP 2.x: http_app() returns a Starlette ASGI app that handles /mcp.
+# We mount it at "/" as a catch-all so our specific routes above take priority.
+mcp_asgi = mcp.http_app()
+
+app = Starlette(
+    routes=[
+        Route("/health", endpoint=health, methods=["GET"]),
+        # REST endpoints for n8n
+        Route("/api/accounts", endpoint=api_accounts, methods=["GET"]),
+        Route("/api/transactions", endpoint=api_transactions, methods=["GET"]),
+        Route("/api/cashflow", endpoint=api_cashflow, methods=["GET"]),
+        Route("/api/budgets", endpoint=api_budgets, methods=["GET"]),
+        Route("/api/recurring", endpoint=api_recurring, methods=["GET"]),
+        Route("/api/networth", endpoint=api_networth, methods=["GET"]),
+        Route("/api/transaction/{id:str}", endpoint=api_update_transaction, methods=["POST"]),
+        Route("/api/token", endpoint=api_token, methods=["GET"]),
+        # FastMCP MCP protocol - handles /mcp (catch-all after explicit routes)
+        Mount("/", app=mcp_asgi),
+    ],
+    lifespan=lifespan,
+)
+
+app.add_middleware(APIKeyMiddleware)
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
