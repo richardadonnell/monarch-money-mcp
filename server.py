@@ -207,6 +207,7 @@ async def get_cashflow_summary(
         kwargs["start_date"] = start_date
     if end_date:
         kwargs["end_date"] = end_date
+    await _init_monarch()
     data = await mm.get_cashflow_summary(**kwargs)
     return _json(data)
 
@@ -231,6 +232,7 @@ async def get_cashflow(
         kwargs["start_date"] = start_date
     if end_date:
         kwargs["end_date"] = end_date
+    await _init_monarch()
     data = await mm.get_cashflow(**kwargs)
     return _json(data)
 
@@ -255,6 +257,7 @@ async def get_budgets(
         kwargs["start_date"] = start_date
     if end_date:
         kwargs["end_date"] = end_date
+    await _init_monarch()
     data = await mm.get_budgets(**kwargs)
     return _json(data)
 
@@ -279,6 +282,7 @@ async def get_recurring_transactions(
         kwargs["start_date"] = start_date
     if end_date:
         kwargs["end_date"] = end_date
+    await _init_monarch()
     data = await mm.get_recurring_transactions(**kwargs)
     return _json(data)
 
@@ -294,6 +298,7 @@ async def get_account_holdings(account_id: str) -> str:
     Args:
         account_id: The Monarch account ID (get from get_accounts first).
     """
+    await _init_monarch()
     data = await mm.get_account_holdings(account_id)
     return _json(data)
 
@@ -318,6 +323,7 @@ async def get_net_worth_history(
         kwargs["start_date"] = start_date
     if end_date:
         kwargs["end_date"] = end_date
+    await _init_monarch()
     data = await mm.get_aggregate_snapshots(**kwargs)
     return _json(data)
 
@@ -328,6 +334,7 @@ async def get_net_worth_history(
 )
 async def get_transaction_categories() -> str:
     """Return all transaction categories with IDs. Use IDs with get_transactions filters or set_budget_amount."""
+    await _init_monarch()
     data = await mm.get_transaction_categories()
     return _json(data)
 
@@ -362,6 +369,7 @@ async def update_transaction(
     }.items():
         if v is not None:
             kwargs[k] = v
+    await _init_monarch()
     data = await mm.update_transaction(**kwargs)
     return _json(data)
 
@@ -383,6 +391,7 @@ async def set_budget_amount(
         category_id: Category ID (get from get_transaction_categories).
         start_date: First day of the target month (YYYY-MM-01).
     """
+    await _init_monarch()
     data = await mm.set_budget_amount(
         amount=amount, category_id=category_id, start_date=start_date
     )
