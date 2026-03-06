@@ -502,21 +502,23 @@ async def api_token(request: Request) -> JSONResponse:
 
 # --- App Assembly ------------------------------------------------------------
 
+# FastMCP 3.x: http_app() returns a StarletteWithLifespan object.
+# Its lifespan MUST be delegated to the parent app to initialize the
+# StreamableHTTPSessionManager task group. We wrap it with our Monarch init.
+mcp_asgi = mcp.http_app()
+
 
 @asynccontextmanager
 async def lifespan(app: Starlette):
-    # Try to init at startup — but don't crash the server if it fails.
-    # Each handler will call _init_monarch() lazily on first request.
-    try:
-        await _init_monarch()
-    except Exception as exc:
-        logger.warning("Monarch init failed at startup (will retry on first request): %s", exc)
-    yield
+    # Delegate to FastMCP's own lifespan first (required for /mcp to work).
+    async with mcp_asgi.lifespan(app):
+        # Also try to init Monarch at startup; each handler retries lazily.
+        try:
+            await _init_monarch()
+        except Exception as exc:
+            logger.warning("Monarch init failed at startup (will retry on first request): %s", exc)
+        yield
 
-
-# FastMCP 2.x: http_app() returns a Starlette ASGI app that handles /mcp.
-# We mount it at "/" as a catch-all so our specific routes above take priority.
-mcp_asgi = mcp.http_app()
 
 app = Starlette(
     routes=[
