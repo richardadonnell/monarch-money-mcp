@@ -21,14 +21,17 @@ Env vars:
 
 from __future__ import annotations
 
+import calendar
 import json
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any, Optional
 
 import uvicorn
 from fastmcp import FastMCP
+from gql import gql
 from monarchmoney import MonarchMoney
 from monarchmoney.monarchmoney import MonarchMoneyEndpoints
 from starlette.applications import Starlette
@@ -60,6 +63,145 @@ MonarchMoneyEndpoints.BASE_URL = "https://api.monarch.com"
 
 mm = MonarchMoney()
 _monarch_ready: bool = False  # lazy-init flag
+
+# Fix: Monarch removed the legacy `goals` query from their GraphQL schema.
+# monarchmoney v0.1.15 still emits `goals { id name completedAt targetDate }`
+# inside the GetJointPlanningData query (guarded by `@include(if: $useLegacyGoals)`,
+# but the server validates field selections regardless of @include). The validation
+# crash surfaces as Monarch's generic "Something went wrong while processing"
+# with locations: [{ line: 120, column: 5 }] (pointing at `goals.name`).
+#
+# Patch `mm.get_budgets` with an equivalent query that drops the legacy goals
+# fragments. `goalsV2` (the current path, default use_v2_goals=True) is preserved.
+_BUDGETS_QUERY = gql(
+    """
+      query GetJointPlanningData($startDate: Date!, $endDate: Date!, $useV2Goals: Boolean!) {
+        budgetData(startMonth: $startDate, endMonth: $endDate) {
+          monthlyAmountsByCategory {
+            category { id __typename }
+            monthlyAmounts {
+              month
+              plannedCashFlowAmount
+              plannedSetAsideAmount
+              actualAmount
+              remainingAmount
+              previousMonthRolloverAmount
+              rolloverType
+              __typename
+            }
+            __typename
+          }
+          monthlyAmountsByCategoryGroup {
+            categoryGroup { id __typename }
+            monthlyAmounts {
+              month
+              plannedCashFlowAmount
+              actualAmount
+              remainingAmount
+              previousMonthRolloverAmount
+              rolloverType
+              __typename
+            }
+            __typename
+          }
+          monthlyAmountsForFlexExpense {
+            budgetVariability
+            monthlyAmounts {
+              month
+              plannedCashFlowAmount
+              actualAmount
+              remainingAmount
+              previousMonthRolloverAmount
+              rolloverType
+              __typename
+            }
+            __typename
+          }
+          totalsByMonth {
+            month
+            totalIncome { plannedAmount actualAmount remainingAmount previousMonthRolloverAmount __typename }
+            totalExpenses { plannedAmount actualAmount remainingAmount previousMonthRolloverAmount __typename }
+            totalFixedExpenses { plannedAmount actualAmount remainingAmount previousMonthRolloverAmount __typename }
+            totalNonMonthlyExpenses { plannedAmount actualAmount remainingAmount previousMonthRolloverAmount __typename }
+            totalFlexibleExpenses { plannedAmount actualAmount remainingAmount previousMonthRolloverAmount __typename }
+            __typename
+          }
+          __typename
+        }
+        categoryGroups {
+          id
+          name
+          order
+          groupLevelBudgetingEnabled
+          budgetVariability
+          rolloverPeriod { id startMonth endMonth __typename }
+          categories {
+            id
+            name
+            order
+            budgetVariability
+            rolloverPeriod { id startMonth endMonth __typename }
+            __typename
+          }
+          type
+          __typename
+        }
+        goalsV2 @include(if: $useV2Goals) {
+          id
+          name
+          archivedAt
+          completedAt
+          priority
+          imageStorageProvider
+          imageStorageProviderId
+          plannedContributions(startMonth: $startDate, endMonth: $endDate) { id month amount __typename }
+          monthlyContributionSummaries(startMonth: $startDate, endMonth: $endDate) { month sum __typename }
+          __typename
+        }
+        budgetSystem
+      }
+    """
+)
+
+
+async def _patched_get_budgets(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    use_legacy_goals: Optional[bool] = False,  # accepted for kwarg-compat, ignored
+    use_v2_goals: Optional[bool] = True,
+) -> dict[str, Any]:
+    if bool(start_date) != bool(end_date):
+        raise Exception("You must specify both a startDate and endDate, not just one of them.")
+
+    if not start_date and not end_date:
+        today = datetime.today()
+        last_month = today.month - 1
+        last_month_year = today.year
+        if last_month < 1:
+            last_month_year -= 1
+            last_month = 12
+        start_date = datetime(last_month_year, last_month, 1).strftime("%Y-%m-%d")
+
+        next_month = today.month + 1
+        next_month_year = today.year
+        if next_month > 12:
+            next_month_year += 1
+            next_month = 1
+        last_day = calendar.monthrange(next_month_year, next_month)[1]
+        end_date = datetime(next_month_year, next_month, last_day).strftime("%Y-%m-%d")
+
+    return await mm.gql_call(
+        operation="GetJointPlanningData",
+        graphql_query=_BUDGETS_QUERY,
+        variables={
+            "startDate": start_date,
+            "endDate": end_date,
+            "useV2Goals": bool(use_v2_goals),
+        },
+    )
+
+
+mm.get_budgets = _patched_get_budgets  # type: ignore[assignment]
 
 
 async def _init_monarch() -> None:
