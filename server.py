@@ -502,7 +502,7 @@ async def update_transaction(
         hide_from_reports: Exclude this transaction from spending reports.
         needs_review: Flag the transaction as needing review.
     """
-    kwargs: dict[str, Any] = {"id": transaction_id}
+    kwargs: dict[str, Any] = {"transaction_id": transaction_id}
     for k, v in {
         "category_id": category_id,
         "notes": notes,
