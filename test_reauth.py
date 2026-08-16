@@ -20,6 +20,7 @@ os.environ.pop("MONARCH_TOKEN", None)  # exercise the credential path
 
 import server  # noqa: E402
 from gql.transport.exceptions import TransportServerError  # noqa: E402
+from monarchmoney import LoginFailedException  # noqa: E402
 
 
 def _expired() -> TransportServerError:
@@ -32,13 +33,20 @@ def _expired() -> TransportServerError:
 class Harness:
     """Swaps server._login for a counter and resets module auth state."""
 
-    def __init__(self, email: str | None = "test@example.com") -> None:
+    def __init__(
+        self,
+        email: str | None = "test@example.com",
+        login_error: Exception | None = None,
+    ) -> None:
         self.logins = 0
         self._email = email
+        self._login_error = login_error
 
     async def _fake_login(self) -> None:
         self.logins += 1
         await asyncio.sleep(0)  # yield, so concurrent callers can interleave
+        if self._login_error is not None:
+            raise self._login_error
         server._monarch_ready = True
 
     def __enter__(self) -> "Harness":
@@ -48,11 +56,13 @@ class Harness:
         server.MONARCH_EMAIL = self._email
         server._monarch_ready = True
         server._auth_epoch = 0
+        server._auth_blocked_until = 0.0
         return self
 
     def __exit__(self, *_exc: object) -> None:
         server._login = self._real_login
         server.MONARCH_EMAIL = self._real_email
+        server._auth_blocked_until = 0.0  # never leak a cooldown into the next test
 
 
 def test_retries_once_after_401() -> None:
@@ -154,6 +164,49 @@ def test_concurrent_401s_collapse_into_one_login() -> None:
     assert results == ["ok"] * 5, results
     assert h.logins == 1, f"expected 1 shared login, got {h.logins}"
     assert server._auth_epoch == 1, server._auth_epoch
+
+
+def test_failed_relogin_starts_cooldown() -> None:
+    """
+    A rejected login must not be retried on every subsequent request. Without a
+    cooldown a stuck credential turns each incoming request into its own login
+    attempt against Monarch, which is how you get rate-limited or locked out.
+    """
+    dead_credentials = LoginFailedException("HTTP Code 401: Unauthorized")
+
+    async def always_401():
+        raise _expired()
+
+    with Harness(login_error=dead_credentials) as h:
+        # First request: 401 -> re-login attempt -> login is rejected.
+        try:
+            asyncio.run(server._call(always_401))
+        except LoginFailedException:
+            pass
+        else:
+            raise AssertionError("a failed re-login should surface")
+
+        assert h.logins == 1, h.logins
+        assert server._auth_blocked_until > 0, "a failed login must start a cooldown"
+
+        # Second request during the cooldown: no new login, original 401 surfaces.
+        try:
+            asyncio.run(server._call(always_401))
+        except TransportServerError as exc:
+            assert exc.code == 401, exc.code
+        else:
+            raise AssertionError("the underlying 401 should surface during cooldown")
+
+        assert h.logins == 1, f"cooldown must suppress the retry, got {h.logins} logins"
+
+        # Once the cooldown lapses, the next 401 may try again.
+        server._auth_blocked_until = 0.0
+        try:
+            asyncio.run(server._call(always_401))
+        except LoginFailedException:
+            pass
+
+        assert h.logins == 2, f"expected a fresh attempt after cooldown, got {h.logins}"
 
 
 def test_login_drops_stale_token_header() -> None:

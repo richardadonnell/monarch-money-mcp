@@ -26,6 +26,7 @@ import calendar
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Optional
@@ -66,6 +67,11 @@ mm = MonarchMoney()
 _monarch_ready: bool = False  # lazy-init flag
 _auth_epoch: int = 0  # bumped on every successful re-auth; dedupes concurrent retries
 _auth_lock = asyncio.Lock()
+# After a failed re-login, refuse further attempts until this monotonic deadline.
+# ponytail: one flat cooldown, not exponential backoff -- Monarch either accepts
+# the credentials or it does not, and a stuck deploy needs a human either way.
+AUTH_COOLDOWN_SECONDS: int = 60
+_auth_blocked_until: float = 0.0
 
 # Fix: Monarch removed the legacy `goals` query from their GraphQL schema.
 # monarchmoney v0.1.15 still emits `goals { id name completedAt targetDate }`
@@ -279,14 +285,37 @@ async def _reauth(seen_epoch: int) -> bool:
     Callers that saw the same epoch collapse into a single login. That matters
     because when a session expires every in-flight request 401s at once, and a
     TOTP code cannot be spent twice.
+
+    A login that fails starts a cooldown: without it every incoming request
+    attempts its own login, which is a credential-stuffing pattern aimed at
+    Monarch and a good way to get the account rate-limited or locked.
     """
-    global _auth_epoch
+    global _auth_epoch, _auth_blocked_until
     if not (MONARCH_EMAIL and MONARCH_PASSWORD):
         return False
     async with _auth_lock:
         if _auth_epoch != seen_epoch:
             return True  # another task already re-authenticated
-        await _login()
+
+        remaining = _auth_blocked_until - time.monotonic()
+        if remaining > 0:
+            logger.warning(
+                "Monarch re-auth in cooldown for another %.0fs after a failed "
+                "login - not retrying",
+                remaining,
+            )
+            return False
+
+        try:
+            await _login()
+        except Exception:
+            _auth_blocked_until = time.monotonic() + AUTH_COOLDOWN_SECONDS
+            logger.error(
+                "Monarch re-login failed - backing off for %ds",
+                AUTH_COOLDOWN_SECONDS,
+            )
+            raise
+        _auth_blocked_until = 0.0
         _auth_epoch += 1
     return True
 

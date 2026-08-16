@@ -125,6 +125,10 @@ Set **all three** — `MONARCH_TOKEN` *and* the credentials — for the best of 
 
 A second consecutive `401` is treated as a real auth failure (wrong password, revoked MFA) and surfaces rather than retrying.
 
+If the re-login itself is rejected, the server backs off for 60s (`AUTH_COOLDOWN_SECONDS`) before attempting another one. Requests during the cooldown fail fast with the underlying `401` instead of each firing its own login — a stuck credential should not turn every incoming request into a login attempt against Monarch.
+
+Reading the error tells you which layer broke: `HTTP Code 401: Unauthorized` means the *login* was rejected, while `401, message='Unauthorized', url='...graphql'` means the *session* expired and the retry is about to run.
+
 ---
 
 ## 2FA / TOTP Setup
