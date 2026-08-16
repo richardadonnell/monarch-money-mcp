@@ -212,6 +212,11 @@ mm.get_budgets = _patched_get_budgets  # type: ignore[assignment]
 async def _login() -> None:
     """Log in with email/password (+ auto-TOTP). Marks the client ready on success."""
     global _monarch_ready
+    # monarchmoney POSTs the login with ClientSession(headers=self._headers), so a
+    # stale "Authorization: Token ..." left by the MONARCH_TOKEN branch travels on
+    # the login request and Monarch rejects it 401 without ever reading the
+    # credentials. Clear it first; _login_user re-sets it from the fresh token.
+    mm._headers.pop("Authorization", None)
     try:
         await mm.login(
             email=MONARCH_EMAIL,

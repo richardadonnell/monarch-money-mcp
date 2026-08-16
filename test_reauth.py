@@ -156,6 +156,51 @@ def test_concurrent_401s_collapse_into_one_login() -> None:
     assert server._auth_epoch == 1, server._auth_epoch
 
 
+def test_login_drops_stale_token_header() -> None:
+    """
+    Regression: the MONARCH_TOKEN branch puts "Authorization: Token <dead>" on the
+    client, and monarchmoney POSTs the login with ClientSession(headers=self._headers).
+    Monarch then answered 401 without ever reading the credentials, so the retry
+    could never recover. Patches mm.login (not _login) to see the real headers.
+    """
+    real_headers = dict(server.mm._headers)
+    real_token = server.MONARCH_TOKEN
+    seen: dict[str, dict[str, str]] = {}
+
+    async def fake_login(**_kwargs: object) -> None:
+        seen["headers"] = dict(server.mm._headers)  # what the login POST would carry
+        server.mm._headers["Authorization"] = "Token fresh-token"  # as _login_user does
+
+    try:
+        server.mm.login = fake_login
+        server.MONARCH_TOKEN = "dead-token"  # reproduce the prod config
+        server._monarch_ready = False  # force _init_monarch through the token branch
+        server._auth_epoch = 0
+
+        calls = {"n": 0}
+
+        async def flaky():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _expired()
+            return "ok"
+
+        result = asyncio.run(server._call(flaky))
+        seen["after"] = dict(server.mm._headers)  # capture before the restore below
+    finally:
+        del server.mm.login
+        server.mm._headers.clear()
+        server.mm._headers.update(real_headers)
+        server.MONARCH_TOKEN = real_token
+
+    assert result == "ok", result
+    assert "headers" in seen, "login was never attempted"
+    assert "Authorization" not in seen["headers"], (
+        f"login POST carried a stale token: {seen['headers'].get('Authorization')!r}"
+    )
+    assert seen["after"]["Authorization"] == "Token fresh-token", seen["after"]
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
