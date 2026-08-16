@@ -117,6 +117,14 @@ You should see `{"status": "ok"}` and a JSON list of your accounts. If you do, y
 
 You need **either** `MONARCH_TOKEN` **or** both `MONARCH_EMAIL` + `MONARCH_PASSWORD`. Token is preferred — it's faster and stateless.
 
+### When a session expires
+
+Monarch tokens go stale eventually. When a call comes back `401`, the server re-authenticates once with `MONARCH_EMAIL` / `MONARCH_PASSWORD` (+ auto-TOTP) and retries that call. Concurrent 401s share a single login, so a rotating TOTP code is never spent twice.
+
+Set **all three** — `MONARCH_TOKEN` *and* the credentials — for the best of both: fast stateless startup, plus self-healing when the token dies. With a token but no credentials there is nothing to re-mint, so the `401` surfaces and you have to replace `MONARCH_TOKEN` by hand.
+
+A second consecutive `401` is treated as a real auth failure (wrong password, revoked MFA) and surfaces rather than retrying.
+
 ---
 
 ## 2FA / TOTP Setup

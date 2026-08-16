@@ -10,8 +10,8 @@ Auth: Authorization: Bearer {MCP_API_KEY} on every route except /health.
 
 Env vars:
   MONARCH_TOKEN      preferred; inject the Monarch bearer token directly (stateless)
-  MONARCH_EMAIL      fallback: email for initial login
-  MONARCH_PASSWORD   fallback: password for initial login
+  MONARCH_EMAIL      fallback: email for login, and for re-login after a 401
+  MONARCH_PASSWORD   fallback: password for login, and for re-login after a 401
   MONARCH_MFA_SECRET TOTP secret key for 2FA accounts (Base32 seed, NOT the 6-digit code)
                      Found in: Monarch Settings -> Security -> MFA -> "Two-factor text code"
                      Or in 1Password: Edit entry -> OTP field -> Copy Secret Key
@@ -21,6 +21,7 @@ Env vars:
 
 from __future__ import annotations
 
+import asyncio
 import calendar
 import json
 import logging
@@ -45,7 +46,7 @@ logger = logging.getLogger("monarch_mcp")
 
 # --- Config ------------------------------------------------------------------
 
-MCP_API_KEY: str = os.environ["MCP_API_KEY"]           # required
+MCP_API_KEY: str = os.environ["MCP_API_KEY"]  # required
 MONARCH_TOKEN: str | None = os.getenv("MONARCH_TOKEN")
 MONARCH_EMAIL: str | None = os.getenv("MONARCH_EMAIL")
 MONARCH_PASSWORD: str | None = os.getenv("MONARCH_PASSWORD")
@@ -63,6 +64,8 @@ MonarchMoneyEndpoints.BASE_URL = "https://api.monarch.com"
 
 mm = MonarchMoney()
 _monarch_ready: bool = False  # lazy-init flag
+_auth_epoch: int = 0  # bumped on every successful re-auth; dedupes concurrent retries
+_auth_lock = asyncio.Lock()
 
 # Fix: Monarch removed the legacy `goals` query from their GraphQL schema.
 # monarchmoney v0.1.15 still emits `goals { id name completedAt targetDate }`
@@ -171,7 +174,9 @@ async def _patched_get_budgets(
     use_v2_goals: Optional[bool] = True,
 ) -> dict[str, Any]:
     if bool(start_date) != bool(end_date):
-        raise Exception("You must specify both a startDate and endDate, not just one of them.")
+        raise Exception(
+            "You must specify both a startDate and endDate, not just one of them."
+        )
 
     if not start_date and not end_date:
         today = datetime.today()
@@ -204,6 +209,35 @@ async def _patched_get_budgets(
 mm.get_budgets = _patched_get_budgets  # type: ignore[assignment]
 
 
+async def _login() -> None:
+    """Log in with email/password (+ auto-TOTP). Marks the client ready on success."""
+    global _monarch_ready
+    try:
+        await mm.login(
+            email=MONARCH_EMAIL,
+            password=MONARCH_PASSWORD,
+            use_saved_session=False,
+            save_session=False,
+            mfa_secret_key=MONARCH_MFA_SECRET,  # None = no 2FA; Base32 secret = auto-TOTP
+        )
+        _monarch_ready = True
+        logger.info("Monarch: logged in with MONARCH_EMAIL / MONARCH_PASSWORD")
+        if MONARCH_MFA_SECRET:
+            logger.info(
+                "Monarch: 2FA TOTP generated automatically from MONARCH_MFA_SECRET"
+            )
+    except Exception as exc:
+        # RequireMFAException is raised when 2FA is enabled but mfa_secret_key was not given
+        if "RequireMFA" in type(exc).__name__ or "mfa" in str(exc).lower():
+            raise RuntimeError(
+                "Monarch requires 2FA but MONARCH_MFA_SECRET is not set. "
+                "Set it to the Base32 TOTP secret key (NOT the 6-digit code). "
+                "Find it in: Monarch Settings -> Security -> MFA -> 'Two-factor text code', "
+                "or in 1Password: Edit entry -> OTP field -> Copy Secret Key."
+            ) from exc
+        raise
+
+
 async def _init_monarch() -> None:
     """Authenticate the Monarch Money client from env vars. Idempotent."""
     global _monarch_ready
@@ -222,28 +256,56 @@ async def _init_monarch() -> None:
             "Set MONARCH_TOKEN, or set both MONARCH_EMAIL and MONARCH_PASSWORD"
         )
 
+    await _login()
+
+
+def _is_auth_error(exc: BaseException) -> bool:
+    """True when Monarch rejected the session itself (HTTP 401), not the query."""
+    # gql's TransportServerError carries .code; aiohttp's ClientResponseError carries .status
+    return getattr(exc, "code", None) == 401 or getattr(exc, "status", None) == 401
+
+
+async def _reauth(seen_epoch: int) -> bool:
+    """
+    Re-login after a 401. Returns False when there is nothing to re-mint: a
+    token-only deploy has no credentials, so retrying would just replay the
+    same dead token.
+
+    Callers that saw the same epoch collapse into a single login. That matters
+    because when a session expires every in-flight request 401s at once, and a
+    TOTP code cannot be spent twice.
+    """
+    global _auth_epoch
+    if not (MONARCH_EMAIL and MONARCH_PASSWORD):
+        return False
+    async with _auth_lock:
+        if _auth_epoch != seen_epoch:
+            return True  # another task already re-authenticated
+        await _login()
+        _auth_epoch += 1
+    return True
+
+
+async def _call(fn, *args: Any, **kwargs: Any) -> Any:
+    """
+    Run a Monarch client call, re-authenticating once if the session expired.
+
+    An expired MONARCH_TOKEN is promoted to a credential login here, so a stale
+    token self-heals at runtime instead of 401ing until the container restarts.
+    """
+    await _init_monarch()
+    seen_epoch = _auth_epoch
     try:
-        await mm.login(
-            email=MONARCH_EMAIL,
-            password=MONARCH_PASSWORD,
-            use_saved_session=False,
-            save_session=False,
-            mfa_secret_key=MONARCH_MFA_SECRET,  # None = no 2FA; Base32 secret = auto-TOTP
-        )
-        _monarch_ready = True
-        logger.info("Monarch: logged in with MONARCH_EMAIL / MONARCH_PASSWORD")
-        if MONARCH_MFA_SECRET:
-            logger.info("Monarch: 2FA TOTP generated automatically from MONARCH_MFA_SECRET")
+        return await fn(*args, **kwargs)
     except Exception as exc:
-        # RequireMFAException is raised when 2FA is enabled but mfa_secret_key was not given
-        if "RequireMFA" in type(exc).__name__ or "mfa" in str(exc).lower():
-            raise RuntimeError(
-                "Monarch requires 2FA but MONARCH_MFA_SECRET is not set. "
-                "Set it to the Base32 TOTP secret key (NOT the 6-digit code). "
-                "Find it in: Monarch Settings -> Security -> MFA -> 'Two-factor text code', "
-                "or in 1Password: Edit entry -> OTP field -> Copy Secret Key."
-            ) from exc
-        raise
+        if not _is_auth_error(exc):
+            raise
+        logger.warning("Monarch rejected the session (401) - re-authenticating")
+        if not await _reauth(seen_epoch):
+            raise
+        # ponytail: one retry, then give up. A second 401 is a real auth failure
+        # (wrong password, revoked MFA), not an expired session.
+        return await fn(*args, **kwargs)
 
 
 def _json(data: Any) -> str:
@@ -271,8 +333,7 @@ mcp = FastMCP(
 )
 async def get_accounts() -> str:
     """Return all Monarch Money accounts with current balances, types, and metadata."""
-    await _init_monarch()
-    data = await mm.get_accounts()
+    data = await _call(mm.get_accounts)
     return _json(data)
 
 
@@ -324,8 +385,7 @@ async def get_transactions(
     }.items():
         if v is not None:
             kwargs[k] = v
-    await _init_monarch()
-    data = await mm.get_transactions(**kwargs)
+    data = await _call(mm.get_transactions, **kwargs)
     return _json(data)
 
 
@@ -349,8 +409,7 @@ async def get_cashflow_summary(
         kwargs["start_date"] = start_date
     if end_date:
         kwargs["end_date"] = end_date
-    await _init_monarch()
-    data = await mm.get_cashflow_summary(**kwargs)
+    data = await _call(mm.get_cashflow_summary, **kwargs)
     return _json(data)
 
 
@@ -374,8 +433,7 @@ async def get_cashflow(
         kwargs["start_date"] = start_date
     if end_date:
         kwargs["end_date"] = end_date
-    await _init_monarch()
-    data = await mm.get_cashflow(**kwargs)
+    data = await _call(mm.get_cashflow, **kwargs)
     return _json(data)
 
 
@@ -399,8 +457,7 @@ async def get_budgets(
         kwargs["start_date"] = start_date
     if end_date:
         kwargs["end_date"] = end_date
-    await _init_monarch()
-    data = await mm.get_budgets(**kwargs)
+    data = await _call(mm.get_budgets, **kwargs)
     return _json(data)
 
 
@@ -424,8 +481,7 @@ async def get_recurring_transactions(
         kwargs["start_date"] = start_date
     if end_date:
         kwargs["end_date"] = end_date
-    await _init_monarch()
-    data = await mm.get_recurring_transactions(**kwargs)
+    data = await _call(mm.get_recurring_transactions, **kwargs)
     return _json(data)
 
 
@@ -440,8 +496,7 @@ async def get_account_holdings(account_id: str) -> str:
     Args:
         account_id: The Monarch account ID (get from get_accounts first).
     """
-    await _init_monarch()
-    data = await mm.get_account_holdings(account_id)
+    data = await _call(mm.get_account_holdings, account_id)
     return _json(data)
 
 
@@ -465,8 +520,7 @@ async def get_net_worth_history(
         kwargs["start_date"] = start_date
     if end_date:
         kwargs["end_date"] = end_date
-    await _init_monarch()
-    data = await mm.get_aggregate_snapshots(**kwargs)
+    data = await _call(mm.get_aggregate_snapshots, **kwargs)
     return _json(data)
 
 
@@ -476,14 +530,17 @@ async def get_net_worth_history(
 )
 async def get_transaction_categories() -> str:
     """Return all transaction categories with IDs. Use IDs with get_transactions filters or set_budget_amount."""
-    await _init_monarch()
-    data = await mm.get_transaction_categories()
+    data = await _call(mm.get_transaction_categories)
     return _json(data)
 
 
 @mcp.tool(
     name="update_transaction",
-    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True},
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+    },
 )
 async def update_transaction(
     transaction_id: str,
@@ -511,14 +568,17 @@ async def update_transaction(
     }.items():
         if v is not None:
             kwargs[k] = v
-    await _init_monarch()
-    data = await mm.update_transaction(**kwargs)
+    data = await _call(mm.update_transaction, **kwargs)
     return _json(data)
 
 
 @mcp.tool(
     name="set_budget_amount",
-    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True},
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+    },
 )
 async def set_budget_amount(
     amount: float,
@@ -533,9 +593,11 @@ async def set_budget_amount(
         category_id: Category ID (get from get_transaction_categories).
         start_date: First day of the target month (YYYY-MM-01).
     """
-    await _init_monarch()
-    data = await mm.set_budget_amount(
-        amount=amount, category_id=category_id, start_date=start_date
+    data = await _call(
+        mm.set_budget_amount,
+        amount=amount,
+        category_id=category_id,
+        start_date=start_date,
     )
     return _json(data)
 
@@ -563,8 +625,7 @@ async def health(request: Request) -> JSONResponse:
 
 async def api_accounts(request: Request) -> JSONResponse:
     try:
-        await _init_monarch()
-        return JSONResponse(await mm.get_accounts())
+        return JSONResponse(await _call(mm.get_accounts))
     except Exception as exc:
         logger.error("api_accounts: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -572,10 +633,9 @@ async def api_accounts(request: Request) -> JSONResponse:
 
 async def api_transactions(request: Request) -> JSONResponse:
     try:
-        await _init_monarch()
         params = dict(request.query_params)
         limit = int(params.pop("limit", 100))
-        return JSONResponse(await mm.get_transactions(limit=limit, **params))
+        return JSONResponse(await _call(mm.get_transactions, limit=limit, **params))
     except Exception as exc:
         logger.error("api_transactions: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -583,9 +643,8 @@ async def api_transactions(request: Request) -> JSONResponse:
 
 async def api_cashflow(request: Request) -> JSONResponse:
     try:
-        await _init_monarch()
         params = dict(request.query_params)
-        return JSONResponse(await mm.get_cashflow(**params))
+        return JSONResponse(await _call(mm.get_cashflow, **params))
     except Exception as exc:
         logger.error("api_cashflow: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -593,9 +652,8 @@ async def api_cashflow(request: Request) -> JSONResponse:
 
 async def api_budgets(request: Request) -> JSONResponse:
     try:
-        await _init_monarch()
         params = dict(request.query_params)
-        return JSONResponse(await mm.get_budgets(**params))
+        return JSONResponse(await _call(mm.get_budgets, **params))
     except Exception as exc:
         logger.error("api_budgets: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -603,9 +661,8 @@ async def api_budgets(request: Request) -> JSONResponse:
 
 async def api_recurring(request: Request) -> JSONResponse:
     try:
-        await _init_monarch()
         params = dict(request.query_params)
-        return JSONResponse(await mm.get_recurring_transactions(**params))
+        return JSONResponse(await _call(mm.get_recurring_transactions, **params))
     except Exception as exc:
         logger.error("api_recurring: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -613,9 +670,8 @@ async def api_recurring(request: Request) -> JSONResponse:
 
 async def api_networth(request: Request) -> JSONResponse:
     try:
-        await _init_monarch()
         params = dict(request.query_params)
-        return JSONResponse(await mm.get_aggregate_snapshots(**params))
+        return JSONResponse(await _call(mm.get_aggregate_snapshots, **params))
     except Exception as exc:
         logger.error("api_networth: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -623,10 +679,9 @@ async def api_networth(request: Request) -> JSONResponse:
 
 async def api_update_transaction(request: Request) -> JSONResponse:
     try:
-        await _init_monarch()
         txn_id = request.path_params["id"]
         body = await request.json()
-        data = await mm.update_transaction(id=txn_id, **body)
+        data = await _call(mm.update_transaction, id=txn_id, **body)
         return JSONResponse(data)
     except Exception as exc:
         logger.error("api_update_transaction: %s", exc)
@@ -658,7 +713,9 @@ async def lifespan(app: Starlette):
         try:
             await _init_monarch()
         except Exception as exc:
-            logger.warning("Monarch init failed at startup (will retry on first request): %s", exc)
+            logger.warning(
+                "Monarch init failed at startup (will retry on first request): %s", exc
+            )
         yield
 
 
@@ -672,7 +729,11 @@ app = Starlette(
         Route("/api/budgets", endpoint=api_budgets, methods=["GET"]),
         Route("/api/recurring", endpoint=api_recurring, methods=["GET"]),
         Route("/api/networth", endpoint=api_networth, methods=["GET"]),
-        Route("/api/transaction/{id:str}", endpoint=api_update_transaction, methods=["POST"]),
+        Route(
+            "/api/transaction/{id:str}",
+            endpoint=api_update_transaction,
+            methods=["POST"],
+        ),
         Route("/api/token", endpoint=api_token, methods=["GET"]),
         # FastMCP MCP protocol - handles /mcp (catch-all after explicit routes)
         Mount("/", app=mcp_asgi),
