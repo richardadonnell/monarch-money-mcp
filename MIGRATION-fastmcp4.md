@@ -132,7 +132,8 @@ server correctly rejects that with
 Working version:
 
 ```bash
-KEY=$(grep '^MCP_API_KEY=' .env | cut -d= -f2- | tr -d '"')
+KEY=$(grep '^MCP_API_KEY=' .env | cut -d= -f2- | tr -d '
+"')
 META='"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"probe","version":"0"}}'
 
 curl -sS -X POST http://localhost:8001/mcp   -H "Authorization: Bearer $KEY"   -H "Content-Type: application/json"   -H "Accept: application/json, text/event-stream"   -H "MCP-Protocol-Version: 2026-07-28"   -H "Mcp-Method: server/discover"   -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\",\"params\":{$META}}"
@@ -145,9 +146,26 @@ parameter, or the server returns `-32020 HeaderMismatch`.
 
 - [ ] Push to Coolify, confirm healthcheck passes
 - [ ] Re-verify Phase 2 steps 2, 5, 6 against `https://mm-mcp.richardadonnell.com`
-- [ ] `CLAUDE.md`: add gotcha for the FastMCP version pin + era-routing behavior
-- [ ] `CLAUDE.md`: fix stale `~545 lines` claim (`server.py` is 781 lines)
+- [x] `CLAUDE.md`: add gotcha for the FastMCP version pin + era-routing behavior (now Gotcha 7)
+- [x] `CLAUDE.md`: fix stale `~545 lines` claim (`server.py` is 781 lines)
+- [x] `CLAUDE.md`: all `server.py:NNN` references re-verified against the real file
+      (64 BASE_URL, 742-753 lifespan, 243-248 MFA hint, 596 kwarg, 758-773 routes)
+- [x] `CLAUDE.md`: Gotcha 6 corrected — the SDK kwarg is `transaction_id`, NOT `id`.
+      The old text had it backwards; commit 943f9bd (2026-04-04) is the fix it describes.
 - [ ] Delete this file
+
+## Found in passing — NOT part of this migration
+
+**Live bug: `POST /api/transaction/{id}` is broken.** `server.py:718` calls
+`_call(mm.update_transaction, id=txn_id, **body)`. The monarchmoney SDK signature is
+`update_transaction(self, transaction_id: str, ...)` — verified by inspecting the
+installed module inside the running container. Passing `id=` raises
+`got an unexpected keyword argument 'id'`, so this endpoint returns HTTP 500 for every
+request.
+
+Commit 943f9bd fixed exactly this on the MCP tool path (`server.py:596` correctly uses
+`transaction_id`) but missed the REST handler. Pre-existing; unrelated to FastMCP 4.
+One-line fix: `id=txn_id` → `transaction_id=txn_id`.
 
 ## Phase 4 — Optional, later
 
