@@ -185,6 +185,8 @@ No auth bypass on the new path. `/health` remains the only exempt route.
 
 ### Production verification, 2026-08-20
 
+Run with `./verify_server.sh <base-url>` (12/12 on both localhost:8001 and prod).
+
 ```
 PASS  /health 200
 PASS  REST unauthed 401
@@ -279,11 +281,16 @@ Monarch issues.
 
 ## Follow-up: when FastMCP 4.0 stable ships
 
+`verify_server.sh` in the repo root automates the whole Phase 2 suite — 12 assertions,
+takes a base URL, exits non-zero on any failure. Use it instead of hand-rolled curl.
+
 1. `requirements.txt`: `fastmcp==4.0.0b3` → `fastmcp==4.0.0`
-2. Rebuild locally, re-run the Phase 2 suite against `:8001`
-3. Push; Coolify redeploys in ~20s
-4. Re-run the suite against prod
-5. Delete this file
+2. `PORT=8001 docker compose -p monarch-mcp-v4 up -d --build`
+3. `./verify_server.sh http://localhost:8001` → expect `12/12 checks passed`
+4. Push; Coolify redeploys in ~20s
+5. `./verify_server.sh https://mm-mcp.richardadonnell.com`
+6. `docker compose -p monarch-mcp-v4 down`
+7. Delete this file
 
 ## Phase 4 — Optional, later
 
