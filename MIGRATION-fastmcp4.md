@@ -169,6 +169,20 @@ parameter, or the server returns `-32020 HeaderMismatch`.
       The old text had it backwards; commit 943f9bd (2026-04-04) is the fix it describes.
 - [ ] Delete this file — **deferred until the 4.0 stable bump** (see status note at top)
 
+### Security check on v4's new surface
+
+The `2026-07-28` era adds `subscriptions/listen`, a long-lived POST-response stream that
+replaced the old HTTP GET endpoint. It is new code reached through `APIKeyMiddleware`, so
+it was worth confirming it does not bypass auth. Verified against the production image:
+
+```
+subscriptions/listen, no auth header   -> 401   (middleware guards it)
+subscriptions/listen, valid key        -> reaches the handler and validates params
+bogus/method, valid key                -> -32601 Method not found
+```
+
+No auth bypass on the new path. `/health` remains the only exempt route.
+
 ### Production verification, 2026-08-20
 
 ```
