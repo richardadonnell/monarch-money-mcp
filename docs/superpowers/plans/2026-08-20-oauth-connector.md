@@ -66,6 +66,16 @@ os.environ.setdefault("MCP_API_KEY", "test-key")
 os.environ.setdefault("MONARCH_TOKEN", "test-token")
 for _var in ("MONARCH_EMAIL", "MONARCH_PASSWORD", "MONARCH_MFA_SECRET"):
     os.environ.pop(_var, None)
+# server.py builds its auth provider at import time and raises if OAuth is only
+# half-configured. On a machine that has real OAuth env vars -- the deploy host --
+# that would abort the import before any test runs.
+for _var in (
+    "GITHUB_CLIENT_ID",
+    "GITHUB_CLIENT_SECRET",
+    "GITHUB_ALLOWED_USER",
+    "PUBLIC_BASE_URL",
+):
+    os.environ.pop(_var, None)
 
 import server  # noqa: E402
 from fastmcp.server.auth import AccessToken  # noqa: E402
@@ -161,14 +171,17 @@ GITHUB_ALLOWED_USER: str | None = os.getenv("GITHUB_ALLOWED_USER")
 PUBLIC_BASE_URL: str | None = os.getenv("PUBLIC_BASE_URL")
 ```
 
-- [ ] **Step 4: Add the import**
+- [ ] **Step 4: Add the imports this task actually uses**
 
 In the import block, after `from fastmcp import FastMCP` (line 35):
 
 ```python
-from fastmcp.server.auth import AccessToken, MultiAuth, OAuthProxy, StaticTokenVerifier
+from fastmcp.server.auth import AccessToken
 from fastmcp.server.auth.providers.github import GitHubTokenVerifier
 ```
+
+Only these two. `MultiAuth`, `OAuthProxy`, and `StaticTokenVerifier` arrive in Task 2,
+where they are first used — adding them here would commit three unused imports.
 
 - [ ] **Step 5: Write the verifier**
 
@@ -813,8 +826,9 @@ Append to `CLAUDE.md` after gotcha 8's paragraph (line 86):
    `_AUTH is None`, FastMCP installs no auth middleware at all, and
    `APIKeyMiddleware` must keep guarding `/mcp` itself. Narrowing it to `/api/*`
    unconditionally would leave `/mcp` open on the rollback path. See
-   `server.py:722-736`. New routes: anything under `/api/` is covered
-   automatically, anything else is not.
+   `APIKeyMiddleware.dispatch` in `server.py` (cited by symbol, not line — the
+   line numbers in gotchas 2 and 3 above have already drifted). New routes:
+   anything under `/api/` is covered automatically, anything else is not.
 ```
 
 - [ ] **Step 3: Update the Env vars section**
