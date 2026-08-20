@@ -33,6 +33,8 @@ from typing import Any, Optional
 
 import uvicorn
 from fastmcp import FastMCP
+from fastmcp.server.auth import AccessToken
+from fastmcp.server.auth.providers.github import GitHubTokenVerifier
 from gql import gql
 from monarchmoney import MonarchMoney
 from monarchmoney.monarchmoney import MonarchMoneyEndpoints
@@ -55,6 +57,12 @@ MONARCH_PASSWORD: str | None = os.getenv("MONARCH_PASSWORD")
 # Get it from: Monarch Settings -> Security -> MFA -> "Two-factor text code"
 # Or from 1Password: Edit the Monarch entry -> OTP field -> Copy Secret Key
 MONARCH_MFA_SECRET: str | None = os.getenv("MONARCH_MFA_SECRET")
+# OAuth (optional). When GITHUB_CLIENT_ID is unset, /mcp keeps its pre-OAuth
+# behavior and APIKeyMiddleware stays the only guard -- see _build_auth().
+GITHUB_CLIENT_ID: str | None = os.getenv("GITHUB_CLIENT_ID")
+GITHUB_CLIENT_SECRET: str | None = os.getenv("GITHUB_CLIENT_SECRET")
+GITHUB_ALLOWED_USER: str | None = os.getenv("GITHUB_ALLOWED_USER")
+PUBLIC_BASE_URL: str | None = os.getenv("PUBLIC_BASE_URL")
 PORT: int = int(os.getenv("PORT", "8000"))
 
 # --- Monarch client (module-level singleton) ----------------------------------
@@ -344,6 +352,43 @@ async def _call(fn, *args: Any, **kwargs: Any) -> Any:
 
 def _json(data: Any) -> str:
     return json.dumps(data, default=str, indent=2)
+
+
+# --- OAuth -------------------------------------------------------------------
+
+
+class AllowlistedGitHubTokenVerifier(GitHubTokenVerifier):
+    """GitHub token verifier that admits exactly one GitHub login.
+
+    OAuthProxy is reachable by anyone who finds the URL, and GitHub will happily
+    authenticate any of its users. This narrows that to one account.
+
+    Returning None rather than raising is deliberate: FastMCP turns None into a
+    401 with a WWW-Authenticate header, which is the handshake Claude needs to
+    offer a Connect prompt. An exception here would surface as a 500 instead.
+    """
+
+    def __init__(self, allowed_login: str, **kwargs: Any) -> None:
+        if not allowed_login:
+            raise ValueError(
+                "allowed_login must be a non-empty GitHub username; an empty "
+                "value would admit every GitHub account"
+            )
+        super().__init__(**kwargs)
+        # GitHub usernames are case-insensitive.
+        self._allowed_login = allowed_login.casefold()
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        result = await super().verify_token(token)
+        if result is None:
+            return None
+        login = result.claims.get("login")
+        if not isinstance(login, str) or login.casefold() != self._allowed_login:
+            logger.warning(
+                "Refused GitHub login %r (allowlist: %r)", login, self._allowed_login
+            )
+            return None
+        return result
 
 
 # --- FastMCP instance --------------------------------------------------------
