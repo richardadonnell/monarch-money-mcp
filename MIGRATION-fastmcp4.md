@@ -89,37 +89,57 @@ If shipping now: it works, it was tested, and legacy clients keep working.
 
 ## Phase 1 — Upgrade
 
-- [ ] `requirements.txt`: `fastmcp==3.4.7` → `fastmcp==4.0.0b3` (or `==4.0.0` when stable)
-- [ ] `requirements.txt`: `starlette>=0.37` → `starlette>=1.0.1`
-- [ ] No `server.py` changes expected — if any are needed, this checklist was wrong, stop and re-check
+- [x] `requirements.txt`: `fastmcp==3.4.7` → `fastmcp==4.0.0b3`
+- [x] `requirements.txt`: `starlette>=0.37` → `starlette>=1.0.1`
+- [x] **No `server.py` changes were needed.** Confirmed: the v4 image builds, boots, and
+      passes its healthcheck against a byte-for-byte unmodified `server.py`.
 
 Exact `==` pinning makes pip install the pre-release without needing `--pre`.
 
+Resolved inside the v4 image: `fastmcp 4.0.0b3`, `fastmcp-slim 4.0.0b3`, `mcp 2.0.0`,
+`mcp-types 2.0.0`, `httpx2 2.12.0`, `starlette 1.6.0`, `pydantic 2.13.4`.
+
 ## Phase 2 — Verify
 
-- [ ] 1. `docker compose up -d --build`
-- [ ] 2. `curl http://localhost:8000/health` → 200
-- [ ] 3. `docker compose logs -f monarch-mcp` → no `StreamableHTTPSessionManager task group was not initialized`
-- [ ] 4. Legacy path: reconnect the `monarch-money` MCP entry in Claude Code (`/mcp`), tools still list
-- [ ] 5. Modern path — expect `supportedVersions:["2026-07-28"]`:
+Run as an A/B: 3.4.7 stayed up on `:8000` while 4.0.0b3 ran alongside on `:8001`
+(`PORT=8001 docker compose -p monarch-mcp-v4 up -d --build`). Same compose file, so the
+only variable is the FastMCP version.
+
+- [x] 1. `docker compose up -d --build` — v4 image built, container reports `healthy`
+- [x] 2. `curl http://localhost:8001/health` → 200 `{"status":"ok"}`
+- [x] 3. Logs clean — zero matches for `task group was not initialized` / `Traceback` / `ERROR`
+- [x] 4. Legacy path intact: `initialize` with NO `MCP-Protocol-Version` header → HTTP 200,
+      `protocolVersion: 2025-06-18`, `Mcp-Session-Id` header issued. Both eras served at once.
+- [x] 5. Modern path: `supportedVersions: ["2026-07-28"]`, `resultType: "complete"`,
+      `serverInfo.version: 4.0.0b3`, `cacheScope: "private"`, and NO `Mcp-Session-Id` header
+- [x] 5b. `tools/list` → all **11** tools present, `resultType` + `cacheScope` on the result
+- [x] 6. **Live data**: modern `tools/call` → `get_accounts` returned **23 real accounts**,
+      `isError: false`, `resultType: "complete"`
+- [x] 7. REST untouched: `/api/accounts` authed → 200 with the same 23 accounts;
+      unauthed → 401 (`APIKeyMiddleware` still guards the mounted app)
+
+### Negative control (3.4.7 on `:8000`)
+
+The identical modern probe against 3.4.7 returns
+`400 {"code":-32600,"message":"Bad Request: Missing session ID"}` — proving the 200s above
+come from the v4 upgrade and not from the probe being lenient.
+
+### Corrected probe command
+
+The original command in this file was WRONG — it omitted the `_meta` envelope, and the v4
+server correctly rejects that with
+`-32602 params._meta must be an object carrying the required ... envelope keys`.
+Working version:
 
 ```bash
-curl -sS -X POST http://localhost:8000/mcp \
-  -H "Authorization: Bearer $MCP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -H "MCP-Protocol-Version: 2026-07-28" \
-  -H "Mcp-Method: server/discover" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}'
+KEY=$(grep '^MCP_API_KEY=' .env | cut -d= -f2- | tr -d '"')
+META='"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"probe","version":"0"}}'
+
+curl -sS -X POST http://localhost:8001/mcp   -H "Authorization: Bearer $KEY"   -H "Content-Type: application/json"   -H "Accept: application/json, text/event-stream"   -H "MCP-Protocol-Version: 2026-07-28"   -H "Mcp-Method: server/discover"   -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\",\"params\":{$META}}"
 ```
 
-- [ ] 6. **Live data check** (the step the smoke test could not cover): one real
-      `tools/call` against Monarch, e.g. `get_accounts`, returns real balances
-- [ ] 7. One authed REST route → confirms the `/api/*` layer is untouched:
-
-```bash
-curl -H "Authorization: Bearer $MCP_API_KEY" http://localhost:8000/api/accounts
-```
+`tools/call` additionally requires an `Mcp-Name` header matching the body's `name`
+parameter, or the server returns `-32020 HeaderMismatch`.
 
 ## Phase 3 — Deploy + docs
 
