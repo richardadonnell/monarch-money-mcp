@@ -636,6 +636,85 @@ async def set_budget_amount(
     return _json(data)
 
 
+# --- MCP Prompts -------------------------------------------------------------
+# Reusable workflows served over prompts/list. Claude Code surfaces them as
+# /mcp__monarch-money__<name>. Prompt arguments cross the wire as strings, so
+# every parameter is typed str and interpolated into the message text -- no
+# coercion to gamble on, and no Monarch call happens here. The returned string
+# becomes a user message; the model then picks the tools.
+
+
+@mcp.prompt(name="monthly_review")
+def monthly_review(month: str = "") -> str:
+    """Review a month's spending against budget and flag anomalies."""
+    period = month or "the current calendar month"
+    return (
+        f"Review my Monarch Money spending for {period}.\n\n"
+        "1. Call get_cashflow_summary for the period to get income, expenses, and savings rate.\n"
+        "2. Call get_cashflow for the per-category breakdown.\n"
+        "3. Call get_budgets for the same period and compare actual vs planned per category.\n"
+        "4. Call get_transactions (limit 500) and surface the largest individual charges.\n\n"
+        "Report: savings rate, the three categories most over budget, the three largest "
+        "one-off transactions, and anything that looks like a duplicate or an unexpected charge. "
+        "Use ISO 8601 dates (YYYY-MM-DD) on every call."
+    )
+
+
+@mcp.prompt(name="find_subscriptions")
+def find_subscriptions(months: str = "3") -> str:
+    """Audit recurring charges and list cancellation candidates."""
+    return (
+        f"Audit my recurring Monarch Money charges over the last {months} months.\n\n"
+        "1. Call get_recurring_transactions for that window.\n"
+        "2. Call get_transactions with is_recurring=true over the same window to catch "
+        "anything the recurring feed missed.\n\n"
+        "Report every subscription with its cadence, amount, and annualized cost, sorted by "
+        "annual spend. Call out price increases versus earlier months, near-duplicate services, "
+        "and anything charged but seemingly unused. Do not cancel or modify anything."
+    )
+
+
+@mcp.prompt(name="budget_variance")
+def budget_variance(month: str = "") -> str:
+    """Show which budget categories are over or under, and by how much."""
+    period = month or "the current calendar month"
+    return (
+        f"Show my Monarch Money budget variance for {period}.\n\n"
+        "Call get_budgets for the period, then produce a table of category, planned, actual, "
+        "variance in dollars, and variance as a percent -- sorted worst overspend first. "
+        "Total the overspend and the underspend separately. For the worst three categories, "
+        "call get_transactions filtered to that category_id to name the transactions driving it."
+    )
+
+
+@mcp.prompt(name="net_worth_check")
+def net_worth_check(months: str = "12") -> str:
+    """Summarize the net worth trend and what moved it."""
+    return (
+        f"Summarize my Monarch Money net worth trend over the last {months} months.\n\n"
+        "1. Call get_net_worth_history for that window.\n"
+        "2. Call get_accounts for the current per-account balances and types.\n\n"
+        "Report the start value, current value, absolute and percent change, the average monthly "
+        "change, and the best and worst months. Then state which accounts contributed most to the "
+        "change, separating market movement from contributions where the data allows."
+    )
+
+
+@mcp.prompt(name="review_uncategorized")
+def review_uncategorized(limit: str = "25") -> str:
+    """Find transactions needing review and propose categories before applying them."""
+    return (
+        f"Help me clean up my Monarch Money transactions. Pull the most recent {limit} "
+        "transactions with get_transactions.\n\n"
+        "1. Call get_transaction_categories first so you have the category IDs.\n"
+        "2. Identify transactions that are uncategorized, miscategorized, or flagged "
+        "needs_review.\n"
+        "3. Propose a category for each one, with the merchant name and amount as justification.\n\n"
+        "Show me the full proposed list and wait for my explicit approval before calling "
+        "update_transaction. Never write a change I have not approved."
+    )
+
+
 # --- Auth Middleware ----------------------------------------------------------
 
 

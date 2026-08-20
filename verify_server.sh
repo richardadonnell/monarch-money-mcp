@@ -24,6 +24,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${MONARCH_REPO:-$SCRIPT_DIR}"
 # One per @mcp.tool decorator in server.py. Bump when a tool is added.
 EXPECTED_TOOLS="${EXPECTED_TOOLS:-11}"
+# One per @mcp.prompt decorator in server.py. Bump when a prompt is added.
+EXPECTED_PROMPTS="${EXPECTED_PROMPTS:-5}"
 
 RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
 if [ ! -t 1 ]; then RED=; GRN=; YEL=; DIM=; RST=; fi
@@ -251,6 +253,44 @@ if jhas "$TMP/toolslist.json" '.result.resultType'; then
   pass "tools/list result carries resultType: $(jget "$TMP/toolslist.json" '.result.resultType')"
 else
   fail "tools/list result is missing resultType (modern-era field)"
+fi
+
+# --- 5b. modern prompts/list --------------------------------------------------
+
+head2 "5b. MODERN prompts/list"
+code=$(mcp_post promptslist   '{"jsonrpc":"2.0","id":9,"method":"prompts/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"phase2-verify","version":"1.0"}}}}'   'MCP-Protocol-Version: 2026-07-28'   'Mcp-Method: prompts/list')
+if [ "$code" != "200" ]; then
+  fail "prompts/list -> $code (expected 200)"
+  info "$(snippet "$TMP/promptslist.raw" 300)"
+else
+  pnames="$(jnames "$TMP/promptslist.json" '.result.prompts')"
+  pcount=$(printf '%s' "$pnames" | grep -c . || true)
+  if [ "${pcount:-0}" = "$EXPECTED_PROMPTS" ]; then
+    pass "prompts/list -> 200, $pcount prompts (expected $EXPECTED_PROMPTS)"
+    info "$(printf '%s' "$pnames" | tr '
+' ' ')"
+  elif [ "${pcount:-0}" -gt 0 ]; then
+    fail "prompts/list -> 200 but $pcount prompts, expected $EXPECTED_PROMPTS"
+    info "$(printf '%s' "$pnames" | tr '
+' ' ')"
+  else
+    fail "prompts/list -> 200 but no prompts in .result.prompts"
+    info "$(snippet "$TMP/promptslist.raw" 300)"
+  fi
+fi
+
+# Render one prompt end to end. No Monarch call happens on this path -- a
+# prompt returns text, so a failure here is a FastMCP wiring problem, not an
+# upstream outage.
+code=$(mcp_post promptget   '{"jsonrpc":"2.0","id":10,"method":"prompts/get","params":{"name":"monthly_review","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"phase2-verify","version":"1.0"}}}}'   'MCP-Protocol-Version: 2026-07-28'   'Mcp-Method: prompts/get')
+if [ "$code" != "200" ]; then
+  fail "prompts/get monthly_review -> $code (expected 200)"
+  info "$(snippet "$TMP/promptget.raw" 300)"
+elif jhas "$TMP/promptget.json" '.result.messages[0].content.text'; then
+  pass "prompts/get monthly_review -> 200, rendered a message"
+else
+  fail "prompts/get monthly_review -> 200 but no .result.messages[0].content.text"
+  info "$(snippet "$TMP/promptget.raw" 300)"
 fi
 
 # --- 6. no Mcp-Session-Id on modern responses --------------------------------
