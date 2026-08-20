@@ -14,8 +14,17 @@ curl http://localhost:8000/health      # smoke test (no auth)
 curl -H "Authorization: Bearer $MCP_API_KEY" http://localhost:8000/api/accounts
 ```
 
-No test suite, no linter configured. Verify changes by running the container
-and hitting `/health` + one authed `/api/*` route.
+```bash
+./verify_server.sh http://localhost:8000          # 12 assertions against a running server
+./verify_server.sh https://mm-mcp.richardadonnell.com
+python test_reauth.py                             # no network, no account needed
+python test_update_transaction_kwargs.py          # no network, no account needed
+```
+
+No linter configured. The two `test_*.py` files are self-contained and safe to run
+anywhere. `verify_server.sh` is NOT — it needs a live server and a real `MCP_API_KEY`,
+and it makes live Monarch calls. That is why it is not named `test_*`: it must never be
+picked up by a `test_*` glob sweep.
 
 ## Architecture
 
@@ -59,7 +68,14 @@ and hitting `/health` + one authed `/api/*` route.
    the SDK param is `transaction_id`, not `id` (see `server.py:596`; passing
    `id` raises "unexpected keyword argument", fixed in commit 943f9bd).
 
-7. **Pin FastMCP exactly.** `requirements.txt` says `fastmcp==4.0.0b3`. It used
+7. **A fake `MONARCH_TOKEN` is NOT isolation.** Running `server.py` locally
+   reaches the LIVE Monarch account. When a bogus token 401s, `_reauth`
+   (`server.py:279-320`) falls back to `MONARCH_EMAIL` / `MONARCH_PASSWORD` /
+   `MONARCH_MFA_SECRET` from the environment, mints a real TOTP, logs in for
+   real, and retries against production data. Demonstrated, not theoretical.
+   Scrub those three vars before local testing — do not just fake the token.
+
+8. **Pin FastMCP exactly.** `requirements.txt` says `fastmcp==4.0.0b3`. It used
    to be `fastmcp>=2.0`, which silently floated across major versions on every
    rebuild. 4.x serves MCP spec revision `2026-07-28` (the stateless protocol)
    and the older session-based handshake at the same time. Era routing is
@@ -78,6 +94,9 @@ Pattern (mirror existing tools):
 3. Build `kwargs` dict, only insert non-None values (see `get_transactions`).
 4. If the tool mutates data, also add a `/api/...` REST handler in the
    routes list at `server.py:758-773`.
+5. Bump `EXPECTED_TOOLS` in `verify_server.sh` (defaults to 11, one per
+   `@mcp.tool`). Its exact-count check fails by design otherwise; it is
+   env-overridable via `EXPECTED_TOOLS=12 ./verify_server.sh ...`.
 
 ## Env vars
 
