@@ -215,6 +215,68 @@ binds both call sites' kwargs against the real SDK signature. Verified against a
 container with a nonexistent transaction id: the `unexpected keyword argument` TypeError
 is gone and the call now reaches Monarch's API. No real transaction was modified.
 
+## Independent audit — verdict: upgrade is clean
+
+An adversarial audit was run against the claim "the upgrade needs zero `server.py`
+changes", tasked with refuting it. **Verdict: SURVIVES — no v4-attributable breakage.**
+
+The strongest evidence: holding a FastMCP **3.4.7 client** constant and byte-diffing full
+tool descriptors and call results against a **4.0.0b3 server**. Across all 11 tools the
+only difference is an auto-generated `title` field ("Get Accounts"). `inputSchema`,
+`outputSchema`, `annotations`, `content`, `structuredContent` and error text are
+byte-identical. `resultType` / `ttlMs` / `cacheScope` carry server-side defaults that
+older peers ignore. **Already-deployed older clients keep working.**
+
+Also established: no route shadowing (`http_app()` exposes exactly `Route /mcp` in both
+3.4.7 and 4.0.0b3); no auth bypass under raw-socket path-traversal probes
+(`/mcp/../health`, `//health`, `/..%2fhealth` all fail closed with 401); no
+deprecation/camelCase warnings; `test_reauth.py` passes unmodified under v4.
+
+### Still unaudited
+
+- Sustained/concurrent load through `BaseHTTPMiddleware` wrapping a streaming mount.
+  Unchanged from v3, so not a regression, but untested in both.
+- The success path of the two mutating tools (`update_transaction`, `set_budget_amount`),
+  deliberately never called with a valid ID. Kwarg names are statically verified.
+- `session_idle_timeout` (new in v4) and long-running/timeout behavior.
+
+## Dev-safety trap — NOT a v4 issue, but important
+
+**A fake `MONARCH_TOKEN` is not isolation.** Running `server.py` locally reaches the
+LIVE Monarch account. When a bogus token 401s, `_reauth` (`server.py:279-320`) falls back
+to `MONARCH_EMAIL` / `MONARCH_PASSWORD` / `MONARCH_MFA_SECRET` from the environment,
+mints a real TOTP, logs in for real, and retries the original request against production
+data.
+
+This was demonstrated, not theorized: an audit run with `MONARCH_TOKEN=faketoken`
+performed a genuine login and a real `updateTransaction` mutation attempt. Nothing was
+modified only because the transaction ID did not exist.
+
+Anyone testing this repo locally should scrub `MONARCH_EMAIL` / `MONARCH_PASSWORD` /
+`MONARCH_MFA_SECRET` from the environment, not just set a fake token.
+
+## Pre-existing REST fragility — NOT v4, not fixed
+
+All five `**params` REST handlers splat raw query strings into SDK calls with no coercion
+or allowlist, so they return 500 rather than 4xx on bad input:
+
+- `?foo=1` (any unknown param) → `TypeError: unexpected keyword argument` → 500, on
+  `api_transactions` (:668), `api_cashflow` (:681), `api_budgets` (:690),
+  `api_recurring` (:699), `api_networth` (:708)
+- `?limit=abc` → `ValueError` → 500
+- `?has_notes=false` → the string `"false"` reaches a GraphQL Boolean filter → 500.
+  Same for `has_attachments`, `is_split`, `is_recurring`.
+
+The MCP tool path is unaffected — FastMCP coerces from the JSON schema, so tools receive
+real booleans. This is why the REST layer is where the bugs are.
+
+Audited for more `id`/`transaction_id`-class kwarg mismatches: **none found.** Every
+kwarg at every REST handler and MCP tool call site was diffed against the real
+monarchmoney 0.1.15 signatures. Two apparent type mismatches are false alarms —
+`get_aggregate_snapshots(start_date: Optional[date])` has a stale annotation and actually
+wants ISO strings, and `get_account_holdings(account_id: int)` takes the string ID
+Monarch issues.
+
 ## Follow-up: when FastMCP 4.0 stable ships
 
 1. `requirements.txt`: `fastmcp==4.0.0b3` → `fastmcp==4.0.0`
