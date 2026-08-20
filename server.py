@@ -715,7 +715,7 @@ async def api_update_transaction(request: Request) -> JSONResponse:
     try:
         txn_id = request.path_params["id"]
         body = await request.json()
-        data = await _call(mm.update_transaction, id=txn_id, **body)
+        data = await _call(mm.update_transaction, transaction_id=txn_id, **body)
         return JSONResponse(data)
     except Exception as exc:
         logger.error("api_update_transaction: %s", exc)
