@@ -282,7 +282,7 @@ fi
 # Render one prompt end to end. No Monarch call happens on this path -- a
 # prompt returns text, so a failure here is a FastMCP wiring problem, not an
 # upstream outage.
-code=$(mcp_post promptget   '{"jsonrpc":"2.0","id":10,"method":"prompts/get","params":{"name":"monthly_review","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"phase2-verify","version":"1.0"}}}}'   'MCP-Protocol-Version: 2026-07-28'   'Mcp-Method: prompts/get')
+code=$(mcp_post promptget   '{"jsonrpc":"2.0","id":10,"method":"prompts/get","params":{"name":"monthly_review","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"phase2-verify","version":"1.0"}}}}'   'MCP-Protocol-Version: 2026-07-28'   'Mcp-Method: prompts/get'   'Mcp-Name: monthly_review')
 if [ "$code" != "200" ]; then
   fail "prompts/get monthly_review -> $code (expected 200)"
   info "$(snippet "$TMP/promptget.raw" 300)"
