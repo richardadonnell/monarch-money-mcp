@@ -85,7 +85,9 @@ any day.
 
 If shipping now: it works, it was tested, and legacy clients keep working.
 
-- [ ] Decided: `_______________` (beta now / wait for stable)
+- [x] Decided **2026-08-20: ship the beta now.** User chose to merge and deploy 4.0.0b3
+      rather than hold for 4.0 stable, after local verification came back fully green.
+      Revisit when 4.0 stable ships: change the pin to `fastmcp==4.0.0` and redeploy.
 
 ## Phase 1 — Upgrade
 
@@ -144,7 +146,10 @@ parameter, or the server returns `-32020 HeaderMismatch`.
 
 ## Phase 3 — Deploy + docs
 
-- [ ] Push to Coolify, confirm healthcheck passes
+- [x] Merged `fix/rest-update-transaction-kwarg` → `main`, then `chore/fastmcp-4-migration` → `main`
+- [x] Rebuilt from merged `main` and re-ran the full suite: **8/8 passed** (the two changes
+      had only been verified separately before this)
+- [x] Pushed `main` (`3584c53..6f51941`) — Coolify auto-deploy triggered
 - [ ] Re-verify Phase 2 steps 2, 5, 6 against `https://mm-mcp.richardadonnell.com`
 - [x] `CLAUDE.md`: add gotcha for the FastMCP version pin + era-routing behavior (now Gotcha 7)
 - [x] `CLAUDE.md`: fix stale `~545 lines` claim (`server.py` is 781 lines)
@@ -166,6 +171,12 @@ request.
 Commit 943f9bd fixed exactly this on the MCP tool path (`server.py:596` correctly uses
 `transaction_id`) but missed the REST handler. Pre-existing; unrelated to FastMCP 4.
 One-line fix: `id=txn_id` → `transaction_id=txn_id`.
+
+**Fixed 2026-08-20** on its own branch off `main` (commit `10acbc1`), kept separate from
+the migration. Added `test_update_transaction_kwargs.py`, a non-mutating self-check that
+binds both call sites' kwargs against the real SDK signature. Verified against a live
+container with a nonexistent transaction id: the `unexpected keyword argument` TypeError
+is gone and the call now reaches Monarch's API. No real transaction was modified.
 
 ## Phase 4 — Optional, later
 
