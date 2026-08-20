@@ -116,6 +116,13 @@ Arguments to set: `upstream_client_id`, `upstream_client_secret`, `token_verifie
 `https://claude.ai/api/mcp/auth_callback` plus `http://localhost:*` for Claude Code's
 RFC 8252 loopback.
 
+**`cache_ttl_seconds` must be set.** `GitHubTokenVerifier.verify_token()` makes two
+GitHub API calls per verification — `GET /user`, then `GET /user/repos` solely to
+read the `X-OAuth-Scopes` response header (`providers/github.py:96-133`) — and
+caching is disabled by default. `OAuthProxy` validates the upstream token on every
+request, so an uncached verifier spends two calls of a 5,000/hour GitHub budget per
+MCP tool call. Set `cache_ttl_seconds=300` on the verifier.
+
 `jwt_signing_key` may be omitted — it is then derived from the upstream client secret
 via PBKDF2 (`oauth_proxy/proxy.py:486-509`), which is stable as long as the GitHub
 secret is. Because the storage directory is *also* derived from that key
@@ -136,12 +143,41 @@ MultiAuth(
 Passed as `FastMCP(..., auth=auth)`. Verification tries the proxy first, then the
 static verifier. Routes and OAuth metadata come only from the proxy.
 
-### 4. `APIKeyMiddleware` scoping (2-line change)
+`client_id` is **required** in each token's dict — `StaticTokenVerifier.verify_token()`
+reads `token_data["client_id"]` as a bare subscript (`providers/jwt.py:676`), so
+omitting it raises `KeyError` on every legacy-key request rather than failing auth
+cleanly. `scopes` and `expires_at` are optional.
+
+`FastMCP.__init__` assigns `auth` with no runtime type check (`server/server.py:424`),
+so a malformed provider surfaces as a confusing failure later rather than at
+construction.
+
+Import paths (none of these are re-exported at the `fastmcp.server.auth` top level
+except `MultiAuth`):
+
+```python
+from fastmcp.server.auth import MultiAuth, OAuthProxy, StaticTokenVerifier
+from fastmcp.server.auth.providers.github import GitHubTokenVerifier
+```
+
+### 4. `APIKeyMiddleware` scoping (conditional, not unconditional)
 
 Currently applied globally (`server.py:857`) and guards every path except `/health`.
-It must early-return for any path not starting with `/api/`, leaving `/mcp` and the
-OAuth endpoints to FastMCP's own auth middleware. `/health` stays public exactly as
-it is today.
+
+**The scoping must be conditional on OAuth being active.** The naive version — always
+early-return for paths outside `/api/*` — opens a hole on the rollback path: when
+`GITHUB_CLIENT_ID` is unset, `auth=None`, so FastMCP installs no auth middleware of
+its own, and a globally-narrowed `APIKeyMiddleware` would leave `/mcp` completely
+unauthenticated on a server exposing bank data.
+
+Required behavior:
+
+- **OAuth active** — guard only `/api/*`. `/mcp` and the OAuth endpoints belong to
+  FastMCP's auth middleware, which accepts the same key through `MultiAuth`.
+- **OAuth inactive** — guard everything except `/health`, exactly as today.
+
+`/health` stays public in both régimes. The middleware therefore reads the module's
+built auth provider, not just the request path.
 
 ### 5. Opt-in switch
 
