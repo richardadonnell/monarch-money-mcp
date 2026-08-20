@@ -15,7 +15,7 @@ curl -H "Authorization: Bearer $MCP_API_KEY" http://localhost:8000/api/accounts
 ```
 
 ```bash
-./verify_server.sh http://localhost:8000          # 12 assertions against a running server
+./verify_server.sh http://localhost:8000          # 14 assertions against a running server
 ./verify_server.sh https://mm-mcp.richardadonnell.com
 python test_reauth.py                             # no network, no account needed
 python test_update_transaction_kwargs.py          # no network, no account needed
@@ -97,6 +97,23 @@ Pattern (mirror existing tools):
 5. Bump `EXPECTED_TOOLS` in `verify_server.sh` (defaults to 11, one per
    `@mcp.tool`). Its exact-count check fails by design otherwise; it is
    env-overridable via `EXPECTED_TOOLS=12 ./verify_server.sh ...`.
+
+## Adding a new MCP prompt
+
+Prompts are the slash-command surface: Claude Code lists them as
+`/mcp__monarch-money__<name>`. Claude Desktop has no prompt picker as of
+Aug 2026, so a prompt is Claude Code / MCP-client only -- put anything Desktop
+must see in a tool instead.
+
+1. `@mcp.prompt(name="...")` on a plain (non-async) function returning `str`.
+2. **Type every parameter `str`.** MCP sends prompt arguments as strings;
+   interpolate them into the message text rather than relying on coercion.
+   Give each one a default so the prompt is invocable bare.
+3. No `_init_monarch()`, no `mm.*` call -- a prompt returns text and the model
+   picks the tools. That is why `prompts/get` in `verify_server.sh` passes even
+   when Monarch is down.
+4. Bump `EXPECTED_PROMPTS` in `verify_server.sh` (defaults to 5, one per
+   `@mcp.prompt`); env-overridable the same way as `EXPECTED_TOOLS`.
 
 ## Env vars
 
