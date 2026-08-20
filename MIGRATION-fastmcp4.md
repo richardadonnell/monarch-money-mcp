@@ -1,6 +1,10 @@
 # Migration: FastMCP 3.4.7 → 4.x (MCP spec 2026-07-28)
 
-Working checklist. Delete this file once Phase 3 is done and deployed.
+**STATUS: COMPLETE — deployed to production 2026-08-20.**
+
+Kept rather than deleted (the original plan said to delete it) because the deployed
+version is a BETA. When `fastmcp==4.0.0` stable ships, this file is the record of what
+was changed, what was verified, and how to re-verify. Delete it after that bump.
 
 ## Context
 
@@ -150,14 +154,33 @@ parameter, or the server returns `-32020 HeaderMismatch`.
 - [x] Rebuilt from merged `main` and re-ran the full suite: **8/8 passed** (the two changes
       had only been verified separately before this)
 - [x] Pushed `main` (`3584c53..6f51941`) — Coolify auto-deploy triggered
-- [ ] Re-verify Phase 2 steps 2, 5, 6 against `https://mm-mcp.richardadonnell.com`
+- [x] Re-verified against `https://mm-mcp.richardadonnell.com` — **8/8 passed**.
+      Coolify picked up the push and redeployed in ~20s.
+- [x] Claude Code's `monarch-money` MCP entry reconnects to prod: `✔ Connected`
+- [x] Smoke-tested all 9 read-only tools against 4.0.0b3 with live data — all OK.
+      The 2 mutating tools (`update_transaction`, `set_budget_amount`) were deliberately
+      NOT called, to avoid modifying real financial records.
+- [x] Local A/B containers torn down
 - [x] `CLAUDE.md`: add gotcha for the FastMCP version pin + era-routing behavior (now Gotcha 7)
 - [x] `CLAUDE.md`: fix stale `~545 lines` claim (`server.py` is 781 lines)
 - [x] `CLAUDE.md`: all `server.py:NNN` references re-verified against the real file
       (64 BASE_URL, 742-753 lifespan, 243-248 MFA hint, 596 kwarg, 758-773 routes)
 - [x] `CLAUDE.md`: Gotcha 6 corrected — the SDK kwarg is `transaction_id`, NOT `id`.
       The old text had it backwards; commit 943f9bd (2026-04-04) is the fix it describes.
-- [ ] Delete this file
+- [ ] Delete this file — **deferred until the 4.0 stable bump** (see status note at top)
+
+### Production verification, 2026-08-20
+
+```
+PASS  /health 200
+PASS  REST unauthed 401
+PASS  REST authed 200
+PASS  modern supportedVersions ["2026-07-28"]
+PASS  tools/list -> 11 tools
+PASS  live tools/call get_accounts (isError false, 23 accounts)
+PASS  legacy initialize 200 (older clients still work)
+PASS  REST update_transaction kwarg fix live
+```
 
 ## Found in passing — NOT part of this migration
 
@@ -177,6 +200,14 @@ the migration. Added `test_update_transaction_kwargs.py`, a non-mutating self-ch
 binds both call sites' kwargs against the real SDK signature. Verified against a live
 container with a nonexistent transaction id: the `unexpected keyword argument` TypeError
 is gone and the call now reaches Monarch's API. No real transaction was modified.
+
+## Follow-up: when FastMCP 4.0 stable ships
+
+1. `requirements.txt`: `fastmcp==4.0.0b3` → `fastmcp==4.0.0`
+2. Rebuild locally, re-run the Phase 2 suite against `:8001`
+3. Push; Coolify redeploys in ~20s
+4. Re-run the suite against prod
+5. Delete this file
 
 ## Phase 4 — Optional, later
 
