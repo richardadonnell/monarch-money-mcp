@@ -30,7 +30,7 @@ for _var in (
     os.environ.pop(_var, None)
 
 import server  # noqa: E402
-from fastmcp.server.auth import AccessToken  # noqa: E402
+from fastmcp.server.auth import AccessToken, MultiAuth  # noqa: E402
 from fastmcp.server.auth.providers.github import GitHubTokenVerifier  # noqa: E402
 
 
@@ -95,6 +95,47 @@ def test_empty_allowlist_refuses_to_construct() -> None:
     raise AssertionError("an empty allowed_login must raise, never match everyone")
 
 
+def _set_oauth_env(**overrides: str | None) -> None:
+    """Point server's module-level OAuth config at test values."""
+    defaults = {
+        "GITHUB_CLIENT_ID": "Ov23liTEST",
+        "GITHUB_CLIENT_SECRET": "secret",
+        "GITHUB_ALLOWED_USER": "richardadonnell",
+        "PUBLIC_BASE_URL": "https://mm-mcp.example.com",
+    }
+    defaults.update(overrides)
+    for name, value in defaults.items():
+        setattr(server, name, value)
+
+
+def test_build_auth_returns_none_without_client_id() -> None:
+    _set_oauth_env(GITHUB_CLIENT_ID=None)
+    assert server._build_auth() is None, (
+        "no GITHUB_CLIENT_ID must mean no auth provider, preserving pre-OAuth behavior"
+    )
+
+
+def test_build_auth_rejects_partial_config() -> None:
+    _set_oauth_env(GITHUB_ALLOWED_USER=None)
+    try:
+        server._build_auth()
+    except RuntimeError as exc:
+        assert "GITHUB_ALLOWED_USER" in str(exc), (
+            "the error must name the missing variable"
+        )
+        return
+    raise AssertionError(
+        "OAuth half-configured must fail loudly, not silently admit everyone"
+    )
+
+
+def test_build_auth_composes_multiauth() -> None:
+    _set_oauth_env()
+    auth = server._build_auth()
+    assert auth is not None
+    assert isinstance(auth, MultiAuth)
+
+
 if __name__ == "__main__":
     test_allowed_login_passes()
     test_other_login_rejected()
@@ -102,4 +143,7 @@ if __name__ == "__main__":
     test_parent_rejection_propagates()
     test_missing_login_claim_rejected()
     test_empty_allowlist_refuses_to_construct()
-    print("OK  github allowlist: 6/6")
+    test_build_auth_returns_none_without_client_id()
+    test_build_auth_rejects_partial_config()
+    test_build_auth_composes_multiauth()
+    print("OK  github allowlist: 9/9")

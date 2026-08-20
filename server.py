@@ -33,7 +33,7 @@ from typing import Any, Optional
 
 import uvicorn
 from fastmcp import FastMCP
-from fastmcp.server.auth import AccessToken
+from fastmcp.server.auth import AccessToken, MultiAuth, OAuthProxy, StaticTokenVerifier
 from fastmcp.server.auth.providers.github import GitHubTokenVerifier
 from gql import gql
 from monarchmoney import MonarchMoney
@@ -391,6 +391,67 @@ class AllowlistedGitHubTokenVerifier(GitHubTokenVerifier):
         return result
 
 
+def _build_auth() -> MultiAuth | None:
+    """Compose OAuth for Claude's connector UI with the legacy key for n8n.
+
+    Returns None when GITHUB_CLIENT_ID is unset, which leaves /mcp exactly as it
+    behaved before OAuth existed. That is the documented rollback.
+    """
+    if not GITHUB_CLIENT_ID:
+        return None
+
+    missing = [
+        name
+        for name, value in (
+            ("GITHUB_CLIENT_SECRET", GITHUB_CLIENT_SECRET),
+            ("GITHUB_ALLOWED_USER", GITHUB_ALLOWED_USER),
+            ("PUBLIC_BASE_URL", PUBLIC_BASE_URL),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            "GITHUB_CLIENT_ID is set, so these are required too: " + ", ".join(missing)
+        )
+
+    verifier = AllowlistedGitHubTokenVerifier(
+        allowed_login=GITHUB_ALLOWED_USER,  # type: ignore[arg-type]
+        # ponytail: 5-minute cache. Uncached, GitHubTokenVerifier spends two
+        # api.github.com calls per MCP request against a 5000/hr budget.
+        cache_ttl_seconds=300,
+    )
+
+    proxy = OAuthProxy(
+        upstream_authorization_endpoint="https://github.com/login/oauth/authorize",
+        upstream_token_endpoint="https://github.com/login/oauth/access_token",
+        upstream_client_id=GITHUB_CLIENT_ID,
+        upstream_client_secret=GITHUB_CLIENT_SECRET,
+        token_verifier=verifier,
+        base_url=PUBLIC_BASE_URL,
+        redirect_path="/auth/callback",
+        allowed_client_redirect_uris=[
+            "https://claude.ai/api/mcp/auth_callback",
+            # Claude Code binds an ephemeral loopback port (RFC 8252).
+            "http://localhost:*",
+            "http://127.0.0.1:*",
+        ],
+    )
+
+    return MultiAuth(
+        server=proxy,
+        verifiers=[
+            # client_id is read with a bare subscript by StaticTokenVerifier;
+            # omitting it raises KeyError instead of failing auth cleanly.
+            StaticTokenVerifier(
+                {MCP_API_KEY: {"client_id": "legacy-api-key", "scopes": []}}
+            )
+        ],
+    )
+
+
+_AUTH: MultiAuth | None = _build_auth()
+
+
 # --- FastMCP instance --------------------------------------------------------
 
 mcp = FastMCP(
@@ -401,6 +462,7 @@ mcp = FastMCP(
         "investment holdings. Use ISO 8601 dates (YYYY-MM-DD) for all date parameters. "
         "Default date range when unspecified: current calendar month."
     ),
+    auth=_AUTH,
 )
 
 # --- MCP Tools ---------------------------------------------------------------
