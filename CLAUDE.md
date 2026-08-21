@@ -36,8 +36,10 @@ picked up by a `test_*` glob sweep.
 - Two Starlette layers: explicit `Route(...)` entries for `/api/*` + `/health`,
   then `Mount("/", mcp_asgi)` as catch-all for `/mcp`. **Order matters** —
   explicit routes must come before the mount or REST 404s.
-- `APIKeyMiddleware` checks `Authorization: Bearer {MCP_API_KEY}` on
-  everything except `/health`.
+- `APIKeyMiddleware` guards `/api/*` unconditionally, and also guards `/mcp`
+  when OAuth is off. With OAuth on, `/mcp` and the OAuth endpoints belong to
+  FastMCP's own auth middleware, which accepts the same key via `MultiAuth`.
+  `/health` is always public — see gotcha 9.
 
 ## Gotchas
 

@@ -16,7 +16,7 @@ Env vars:
   MONARCH_MFA_SECRET TOTP secret key for 2FA accounts (Base32 seed, NOT the 6-digit code)
                      Found in: Monarch Settings -> Security -> MFA -> "Two-factor text code"
                      Or in 1Password: Edit entry -> OTP field -> Copy Secret Key
-  MCP_API_KEY        required; protects all endpoints
+  MCP_API_KEY        required; guards /api/* always, and /mcp when OAuth is off
   GITHUB_CLIENT_ID   optional; enables OAuth for Claude custom connectors
   GITHUB_CLIENT_SECRET  required when GITHUB_CLIENT_ID is set
   GITHUB_ALLOWED_USER   required when GITHUB_CLIENT_ID is set; the one GitHub login admitted
