@@ -70,7 +70,7 @@ recorded here on purpose.
 | --- | --- | --- |
 | `/health` | none | Coolify healthcheck |
 | `/api/*` | `APIKeyMiddleware` — `Bearer $MCP_API_KEY` | n8n |
-| `/.well-known/*`, `/authorize`, `/token`, `/register`, `/auth/callback` | none, by protocol | Claude OAuth discovery |
+| `/.well-known/*`, `/authorize`, `/token`, `/register`, `/consent`, `/auth/callback` | none, by protocol | Claude OAuth discovery |
 | `/mcp` | `MultiAuth` — GitHub-issued FastMCP JWT **or** `$MCP_API_KEY` | Claude Desktop / web / mobile / Code |
 
 ### Why route mounting already works
@@ -128,6 +128,14 @@ via PBKDF2 (`oauth_proxy/proxy.py:486-509`), which is stable as long as the GitH
 secret is. Because the storage directory is *also* derived from that key
 (`:518-527`), rotating the GitHub client secret silently orphans the old store and
 forces one reconnect. Acceptable; noted so it is not mistaken for a bug.
+
+`enable_cimd` is left unset, which means CIMD (Client ID Metadata Document support)
+ships **enabled** — `OAuthProxy`'s default is `enable_cimd=True`, so the published AS
+metadata advertises `"client_id_metadata_document_supported": true`. This is not
+actively configured, just not turned off, and it is a deliberate no-op rather than an
+oversight: CIMD clients are still bound by the same `allowed_client_redirect_uris`
+allowlist, and FastMCP ships an SSRF guard on the metadata fetch. See the "Out of
+scope" section below.
 
 ### 3. `MultiAuth` composition (~6 lines)
 
@@ -231,6 +239,12 @@ Anthropic's discovery, registration, and token requests originate from
 `160.79.104.0/21`, with a **10-second** response budget (30s for refresh). Traefik
 must not rate-limit, challenge, or geo-block that range, and must pass
 `/.well-known/*` through to the app.
+
+`/register` (Dynamic Client Registration) is unauthenticated by protocol, and the
+client registrations it writes carry no TTL — anyone who finds the URL can write
+unbounded records into the `oauth-state` volume. Suggested mitigation: a Traefik
+rate-limit on `/register` that excludes `160.79.104.0/21`, consistent with the
+instruction above not to rate-limit that range.
 
 ## Client setup
 
@@ -362,7 +376,9 @@ today's.
 
 - Connectors Directory submission
 - Per-user identity to per-Monarch-account mapping (one account, one `mm` singleton)
-- CIMD (`enable_cimd` exists on `OAuthProxy`; DCR is sufficient at one user)
+- Tuning CIMD — it is **not** out of scope in the sense of being disabled; `OAuthProxy`'s
+  `enable_cimd` defaults to `True` and is left at that default deliberately (see
+  Components, section 2). Only *actively configuring* it is out of scope here.
 - Removing `MCP_API_KEY` from `/mcp`
 - The `.mcpb` desktop bundle (route 2 of the 2026-08-20 research)
 

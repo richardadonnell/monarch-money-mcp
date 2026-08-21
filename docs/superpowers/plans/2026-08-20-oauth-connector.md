@@ -886,8 +886,14 @@ Not a code task. Run after Tasks 1-6 are merged.
       challenge, or geo-block `160.79.104.0/21` — Anthropic's discovery, registration,
       and token calls come from there with a 10-second budget. A WAF in front of the
       app breaks the flow while `/health` still looks fine.
+- [ ] `/register` is unauthenticated by protocol and its client registrations are
+      written without a TTL, so anyone who finds the URL can write unbounded records
+      into the `oauth-state` volume. Put a Traefik rate-limit on `/register` that
+      excludes `160.79.104.0/21` (Anthropic's egress range, per the item above).
 - [ ] Deploy
-- [ ] `./verify_server.sh https://mm-mcp.richardadonnell.com` — expect 19/19 with OAuth enabled (14/14 before it is turned on, sections 9-11 SKIP)
+- [ ] `EXPECT_OAUTH=1 ./verify_server.sh https://mm-mcp.richardadonnell.com` — expect
+      19/19 with OAuth enabled; `EXPECT_OAUTH=1` makes a dead OAuth surface FAIL
+      instead of silently SKIPping sections 9-11
 - [ ] Claude Desktop → Settings → Connectors → + → Add custom connector →
       `https://mm-mcp.richardadonnell.com/mcp` → leave Advanced settings empty
 - [ ] Confirm the connector appears on Claude mobile after next login
