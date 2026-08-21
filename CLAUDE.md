@@ -15,10 +15,11 @@ curl -H "Authorization: Bearer $MCP_API_KEY" http://localhost:8000/api/accounts
 ```
 
 ```bash
-./verify_server.sh http://localhost:8000          # 14 assertions against a running server
+./verify_server.sh http://localhost:8000          # 14 assertions (19 with OAuth on: +5 across 3 checks; skipped when OAuth is off)
 ./verify_server.sh https://mm-mcp.richardadonnell.com
 python test_reauth.py                             # no network, no account needed
 python test_update_transaction_kwargs.py          # no network, no account needed
+python test_github_allowlist.py                   # no network, no account needed
 ```
 
 No linter configured. The two `test_*.py` files are self-contained and safe to run
@@ -85,6 +86,17 @@ picked up by a `test_*` glob sweep.
    server-side config flag selects this. Do not unpin — a major bump changes
    protocol behavior, not just the API surface.
 
+9. **Two auth régimes, and the split is conditional.** `/api/*` is guarded by
+   `APIKeyMiddleware`; `/mcp` and the OAuth endpoints are guarded by FastMCP's
+   own middleware via `MultiAuth`, which accepts the same `MCP_API_KEY`. But
+   that split only applies when OAuth is on. When `GITHUB_CLIENT_ID` is unset,
+   `_AUTH is None`, FastMCP installs no auth middleware at all, and
+   `APIKeyMiddleware` must keep guarding `/mcp` itself. Narrowing it to `/api/*`
+   unconditionally would leave `/mcp` open on the rollback path. See
+   `APIKeyMiddleware.dispatch` in `server.py` (cited by symbol, not line — the
+   line numbers in gotchas 2 and 3 above have already drifted). New routes:
+   anything under `/api/` is covered automatically, anything else is not.
+
 ## Adding a new MCP tool
 
 Pattern (mirror existing tools):
@@ -119,6 +131,13 @@ must see in a tool instead.
 
 Required: `MCP_API_KEY`. Auth: either `MONARCH_TOKEN` (preferred, stateless)
 OR `MONARCH_EMAIL` + `MONARCH_PASSWORD` (+ `MONARCH_MFA_SECRET` if 2FA).
+
+OAuth (all optional; only needed to add this server as a Claude connector):
+`GITHUB_CLIENT_ID` acts as the on/off switch — when it is set,
+`GITHUB_CLIENT_SECRET`, `GITHUB_ALLOWED_USER`, and `PUBLIC_BASE_URL` become
+required and the server refuses to boot without them. `FASTMCP_HOME=/data`
+points OAuth state at the mounted volume.
+
 Full reference in `.env.example`. README covers user-facing setup.
 
 ## Deployment

@@ -6,7 +6,8 @@ Dual-protocol server:
   - /api/* Plain REST endpoints (for n8n HTTP Request nodes)
   - /health Unauthenticated health check
 
-Auth: Authorization: Bearer {MCP_API_KEY} on every route except /health.
+Auth: Authorization: Bearer {MCP_API_KEY} on /api/*. /mcp accepts that key or a
+GitHub OAuth token when GITHUB_CLIENT_ID is set. /health is always public.
 
 Env vars:
   MONARCH_TOKEN      preferred; inject the Monarch bearer token directly (stateless)
@@ -16,6 +17,10 @@ Env vars:
                      Found in: Monarch Settings -> Security -> MFA -> "Two-factor text code"
                      Or in 1Password: Edit entry -> OTP field -> Copy Secret Key
   MCP_API_KEY        required; protects all endpoints
+  GITHUB_CLIENT_ID   optional; enables OAuth for Claude custom connectors
+  GITHUB_CLIENT_SECRET  required when GITHUB_CLIENT_ID is set
+  GITHUB_ALLOWED_USER   required when GITHUB_CLIENT_ID is set; the one GitHub login admitted
+  PUBLIC_BASE_URL       required when GITHUB_CLIENT_ID is set; must match the URL entered in Claude
   PORT               optional, defaults to 8000
 """
 
