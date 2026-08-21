@@ -433,16 +433,18 @@ head2 "9. OAuth: /.well-known/oauth-protected-resource/mcp (no auth)"
 prm_code=$(curl -sS -o "$TMP/prm.raw" -w '%{http_code}' \
   "$BASE/.well-known/oauth-protected-resource/mcp" 2>/dev/null) || prm_code=000
 de_sse "$TMP/prm.raw" "$TMP/prm.json"
-if [ "$prm_code" = "404" ]; then
-  skip "OAuth not enabled on this server (PRM 404) -- skipping checks 9-11"
+# RFC 9728 requires the PRM to be publicly readable, so 200 here only happens
+# when APIKeyMiddleware has delegated to FastMCP -- i.e. OAuth is active. When
+# OAuth is off, APIKeyMiddleware guards every non-/health path itself and
+# returns 401 for ANY unauthenticated request, route or no route -- so a
+# missing PRM never surfaces as 404. Do not switch this back to a 404 check.
+if [ "$prm_code" != "200" ]; then
+  skip "OAuth not enabled on this server (PRM -> $prm_code) -- skipping checks 9-11"
   OAUTH_ON=false
 else
   OAUTH_ON=true
   resource="$(jget "$TMP/prm.json" '.resource')"
-  if [ "$prm_code" != "200" ]; then
-    fail "protected resource metadata -> $prm_code (expected 200)"
-    info "$(snippet "$TMP/prm.raw")"
-  elif [ "$resource" = "$BASE/mcp" ]; then
+  if [ "$resource" = "$BASE/mcp" ]; then
     pass "protected resource metadata -> 200, resource: $resource"
   else
     fail "PRM resource is '${resource:-<absent>}' (expected $BASE/mcp)"
