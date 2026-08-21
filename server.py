@@ -827,8 +827,15 @@ def review_uncategorized(limit: str = "25") -> str:
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        path = request.url.path
         # Health check is always public
-        if request.url.path == "/health":
+        if path == "/health":
+            return await call_next(request)
+        # With OAuth active, FastMCP's own auth middleware owns /mcp and the
+        # OAuth endpoints -- and accepts this same key via MultiAuth. Without
+        # it, auth=None means FastMCP guards nothing, so this middleware stays
+        # the only thing standing in front of /mcp.
+        if _AUTH is not None and not path.startswith("/api/"):
             return await call_next(request)
         auth = request.headers.get("Authorization", "")
         if not (auth.startswith("Bearer ") and auth[7:] == MCP_API_KEY):

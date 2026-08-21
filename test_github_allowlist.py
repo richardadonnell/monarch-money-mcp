@@ -136,6 +136,82 @@ def test_build_auth_composes_multiauth() -> None:
     assert isinstance(auth, MultiAuth)
 
 
+class _FakeURL:
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+
+class _FakeRequest:
+    def __init__(self, path: str, auth: str = "") -> None:
+        self.url = _FakeURL(path)
+        self.headers = {"Authorization": auth} if auth else {}
+
+
+def _dispatch(path: str, auth_header: str, oauth_on: bool) -> int:
+    """Run APIKeyMiddleware.dispatch and return the resulting status code."""
+    original = server._AUTH
+    server._AUTH = object() if oauth_on else None
+    try:
+        mw = server.APIKeyMiddleware(app=None)
+
+        async def _next(_request: object) -> object:
+            return type("R", (), {"status_code": 200})()
+
+        result = asyncio.run(_dispatch_async(mw, path, auth_header, _next))
+        return result.status_code
+    finally:
+        server._AUTH = original
+
+
+async def _dispatch_async(mw, path, auth_header, call_next):  # noqa: ANN001
+    return await mw.dispatch(_FakeRequest(path, auth_header), call_next)
+
+
+def test_health_is_public_in_both_regimes() -> None:
+    for oauth_on in (True, False):
+        assert _dispatch("/health", "", oauth_on) == 200
+
+
+def test_api_requires_key_in_both_regimes() -> None:
+    # Read the key off the module rather than hardcoding "test-key": if the
+    # caller's shell already exports MCP_API_KEY, setdefault above is a no-op
+    # and a hardcoded literal would fail spuriously.
+    good = f"Bearer {server.MCP_API_KEY}"
+    for oauth_on in (True, False):
+        assert _dispatch("/api/accounts", "", oauth_on) == 401
+        assert _dispatch("/api/accounts", good, oauth_on) == 200, (
+            "the real key must still open /api/*"
+        )
+
+
+def test_mcp_is_still_guarded_when_oauth_is_off() -> None:
+    # The rollback path. FastMCP installs no auth middleware when auth=None,
+    # so this middleware must remain the guard on /mcp.
+    assert _dispatch("/mcp", "", oauth_on=False) == 401, (
+        "with OAuth disabled, /mcp must not be open to the world"
+    )
+
+
+def test_mcp_is_delegated_when_oauth_is_on() -> None:
+    # FastMCP's own auth middleware owns /mcp, and accepts the legacy key
+    # through MultiAuth, so this middleware must step aside.
+    assert _dispatch("/mcp", "", oauth_on=True) == 200
+
+
+def test_oauth_endpoints_are_public_when_oauth_is_on() -> None:
+    for path in (
+        "/.well-known/oauth-protected-resource/mcp",
+        "/.well-known/oauth-authorization-server",
+        "/authorize",
+        "/token",
+        "/register",
+        "/auth/callback",
+    ):
+        assert _dispatch(path, "", oauth_on=True) == 200, (
+            f"{path} must be reachable unauthenticated for OAuth discovery"
+        )
+
+
 if __name__ == "__main__":
     test_allowed_login_passes()
     test_other_login_rejected()
@@ -146,4 +222,9 @@ if __name__ == "__main__":
     test_build_auth_returns_none_without_client_id()
     test_build_auth_rejects_partial_config()
     test_build_auth_composes_multiauth()
-    print("OK  github allowlist: 9/9")
+    test_health_is_public_in_both_regimes()
+    test_api_requires_key_in_both_regimes()
+    test_mcp_is_still_guarded_when_oauth_is_off()
+    test_mcp_is_delegated_when_oauth_is_on()
+    test_oauth_endpoints_are_public_when_oauth_is_on()
+    print("OK  github allowlist: 14/14")
