@@ -30,7 +30,7 @@ picked up by a `test_*` glob sweep.
 ## Architecture
 
 - `server.py` — everything: FastMCP tools, REST handlers, auth middleware,
-  Starlette app assembly. ~979 lines, single module on purpose.
+  Starlette app assembly. ~990 lines, single module on purpose.
 - `mm = MonarchMoney()` is a **module-level singleton**. `_init_monarch()`
   guards with `_monarch_ready` flag and is called lazily by every handler.
 - Two Starlette layers: explicit `Route(...)` entries for `/api/*` + `/health`,

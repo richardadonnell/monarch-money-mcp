@@ -843,10 +843,14 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         # Health check is always public
         if path == "/health":
             return await call_next(request)
-        # With OAuth active, FastMCP's own auth middleware owns /mcp and the
-        # OAuth endpoints -- and accepts this same key via MultiAuth. Without
-        # it, auth=None means FastMCP guards nothing, so this middleware stays
-        # the only thing standing in front of /mcp.
+        # With OAuth active, /mcp belongs to FastMCP's own RequireAuthMiddleware,
+        # which accepts this same key via MultiAuth -- so this middleware steps
+        # aside for it. The OAuth endpoints (/authorize, /token, /register,
+        # /consent, /auth/callback, /.well-known/*) are public by protocol, not
+        # guarded by FastMCP either; they fall through this same branch because
+        # they too are outside /api/. Without OAuth, auth=None means FastMCP
+        # guards nothing, so this middleware stays the only thing standing in
+        # front of /mcp.
         if _AUTH is not None and not path.startswith("/api/"):
             return await call_next(request)
         auth = request.headers.get("Authorization", "")
