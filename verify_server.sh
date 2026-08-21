@@ -26,6 +26,11 @@ REPO="${MONARCH_REPO:-$SCRIPT_DIR}"
 EXPECTED_TOOLS="${EXPECTED_TOOLS:-11}"
 # One per @mcp.prompt decorator in server.py. Bump when a prompt is added.
 EXPECTED_PROMPTS="${EXPECTED_PROMPTS:-5}"
+# 'auto' (default): sections 9-11 SKIP when the PRM is unreachable/non-200 --
+# lets this script run unmodified against a server with OAuth off. Set to 1
+# to assert OAuth must be live: a non-200 PRM then FAILs instead of skipping,
+# so a broken OAuth surface can no longer hide behind a green run.
+EXPECT_OAUTH="${EXPECT_OAUTH:-auto}"
 
 RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
 if [ ! -t 1 ]; then RED=; GRN=; YEL=; DIM=; RST=; fi
@@ -439,7 +444,16 @@ de_sse "$TMP/prm.raw" "$TMP/prm.json"
 # returns 401 for ANY unauthenticated request, route or no route -- so a
 # missing PRM never surfaces as 404. Do not switch this back to a 404 check.
 if [ "$prm_code" != "200" ]; then
-  skip "OAuth not enabled on this server (PRM -> $prm_code) -- skipping checks 9-11"
+  if [ "$prm_code" = "000" ]; then
+    reason="could not connect to $BASE"  # unreachable is not the same as "not enabled"
+  else
+    reason="PRM -> $prm_code"
+  fi
+  if [ "$EXPECT_OAUTH" = "1" ]; then
+    fail "EXPECT_OAUTH=1 but OAuth surface is not live ($reason) -- skipping checks 10-11"
+  else
+    skip "OAuth not enabled on this server ($reason) -- skipping checks 9-11"
+  fi
   OAUTH_ON=false
 else
   OAUTH_ON=true

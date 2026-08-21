@@ -370,7 +370,11 @@ class AllowlistedGitHubTokenVerifier(GitHubTokenVerifier):
 
     Returning None rather than raising is deliberate: FastMCP turns None into a
     401 with a WWW-Authenticate header, which is the handshake Claude needs to
-    offer a Connect prompt. An exception here would surface as a 500 instead.
+    offer a Connect prompt. Raising here would not do that -- both
+    OAuthProxy.load_access_token and MultiAuth.verify_token catch every
+    exception a verifier raises and treat it as a failed match, so an
+    exception would still end up as this same None/401 path, just with the
+    real rejection reason buried in a debug log instead of the warning below.
     """
 
     def __init__(self, allowed_login: str, **kwargs: Any) -> None:
@@ -435,7 +439,10 @@ def _build_auth() -> MultiAuth | None:
         base_url=PUBLIC_BASE_URL,
         redirect_path="/auth/callback",
         allowed_client_redirect_uris=[
+            # claude.ai and claude.com are both Anthropic-owned; Claude's
+            # connector callback has been observed on either host.
             "https://claude.ai/api/mcp/auth_callback",
+            "https://claude.com/api/mcp/auth_callback",
             # Claude Code binds an ephemeral loopback port (RFC 8252).
             "http://localhost:*",
             "http://127.0.0.1:*",

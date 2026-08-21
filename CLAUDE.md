@@ -22,7 +22,7 @@ python test_update_transaction_kwargs.py          # no network, no account neede
 python test_github_allowlist.py                   # no network, no account needed
 ```
 
-No linter configured. The two `test_*.py` files are self-contained and safe to run
+No linter configured. The three `test_*.py` files are self-contained and safe to run
 anywhere. `verify_server.sh` is NOT — it needs a live server and a real `MCP_API_KEY`,
 and it makes live Monarch calls. That is why it is not named `test_*`: it must never be
 picked up by a `test_*` glob sweep.
@@ -30,16 +30,17 @@ picked up by a `test_*` glob sweep.
 ## Architecture
 
 - `server.py` — everything: FastMCP tools, REST handlers, auth middleware,
-  Starlette app assembly. ~780 lines, single module on purpose.
+  Starlette app assembly. ~979 lines, single module on purpose.
 - `mm = MonarchMoney()` is a **module-level singleton**. `_init_monarch()`
   guards with `_monarch_ready` flag and is called lazily by every handler.
 - Two Starlette layers: explicit `Route(...)` entries for `/api/*` + `/health`,
   then `Mount("/", mcp_asgi)` as catch-all for `/mcp`. **Order matters** —
   explicit routes must come before the mount or REST 404s.
 - `APIKeyMiddleware` guards `/api/*` unconditionally, and also guards `/mcp`
-  when OAuth is off. With OAuth on, `/mcp` and the OAuth endpoints belong to
-  FastMCP's own auth middleware, which accepts the same key via `MultiAuth`.
-  `/health` is always public — see gotcha 9.
+  when OAuth is off. With OAuth on, `/mcp` belongs to FastMCP's own
+  `RequireAuthMiddleware`, which accepts the same key via `MultiAuth`; the
+  OAuth endpoints themselves stay public by protocol. `/health` is always
+  public — see gotcha 9.
 
 ## Gotchas
 
@@ -89,9 +90,13 @@ picked up by a `test_*` glob sweep.
    protocol behavior, not just the API surface.
 
 9. **Two auth régimes, and the split is conditional.** `/api/*` is guarded by
-   `APIKeyMiddleware`; `/mcp` and the OAuth endpoints are guarded by FastMCP's
-   own middleware via `MultiAuth`, which accepts the same `MCP_API_KEY`. But
-   that split only applies when OAuth is on. When `GITHUB_CLIENT_ID` is unset,
+   `APIKeyMiddleware`; `/mcp` is guarded by FastMCP's own `RequireAuthMiddleware`
+   via `MultiAuth`, which accepts the same `MCP_API_KEY`. The OAuth endpoints
+   (`/authorize`, `/token`, `/register`, `/consent`, `/auth/callback`,
+   `/.well-known/*`) are **not** guarded by that middleware — they are
+   deliberately public, as the OAuth protocol requires, and `APIKeyMiddleware`
+   waves them through. But the `/mcp` split only applies when OAuth is on. When
+   `GITHUB_CLIENT_ID` is unset,
    `_AUTH is None`, FastMCP installs no auth middleware at all, and
    `APIKeyMiddleware` must keep guarding `/mcp` itself. Narrowing it to `/api/*`
    unconditionally would leave `/mcp` open on the rollback path. See
