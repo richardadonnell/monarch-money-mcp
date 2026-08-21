@@ -102,6 +102,109 @@ curl -H "Authorization: Bearer your-generated-key-here" http://localhost:8000/ap
 
 You should see `{"status": "ok"}` and a JSON list of your accounts. If you do, you're good to go.
 
+**Next:** connect it to Claude. [Claude Connector Setup](#claude-connector-setup-oauth) is the path most people want — it covers Claude Desktop, claude.ai, and mobile in one setup. If you only ever use this from Claude Desktop against a local server, the [local stdio bridge](#local-stdio-bridge-claude-desktop-only) is simpler.
+
+---
+
+## Claude Connector Setup (OAuth)
+
+This is how you get the tools into **Claude Desktop, claude.ai, and the mobile apps** — one setup, all three surfaces.
+
+Claude's "Add custom connector" dialog does not accept a static `Authorization: Bearer` header ([the request for it was closed as not planned](https://github.com/anthropics/claude-ai-mcp/issues/112)), so reaching those surfaces requires OAuth. This server ships an optional GitHub-backed OAuth flow that admits exactly one GitHub account: yours.
+
+**Prerequisite:** the server must be reachable over public HTTPS. Anthropic's infrastructure — not your laptop — makes the outbound call, so `localhost` cannot work here. See [Coolify Deployment](#coolify-deployment) for one way to get there, or use any host that terminates TLS for you. For local-only use, skip to [Local stdio bridge](#local-stdio-bridge-claude-desktop-only) below.
+
+### Step 1 — Create a GitHub OAuth App
+
+Go to [github.com/settings/developers](https://github.com/settings/developers) → **New OAuth App**.
+
+| Field | Value |
+|---|---|
+| Application name | anything (`monarch-mcp`) |
+| Homepage URL | your server URL |
+| **Authorization callback URL** | `https://your-host.example.com/auth/callback` |
+
+The callback URL must match **exactly** — it is `PUBLIC_BASE_URL` + `/auth/callback`, and GitHub permits only one. Generate a client secret and keep it with the client ID.
+
+### Step 2 — Set the environment variables
+
+```bash
+GITHUB_CLIENT_ID=Ov23li...
+GITHUB_CLIENT_SECRET=...
+GITHUB_ALLOWED_USER=your-github-username
+PUBLIC_BASE_URL=https://your-host.example.com
+FASTMCP_HOME=/data
+```
+
+> **`PUBLIC_BASE_URL` must not include `/mcp`.** Claude is given `${PUBLIC_BASE_URL}/mcp`, but this variable is the base. Include `/mcp` here and the entire OAuth surface relocates under `/mcp/...`, discovery 404s, and the connector fails with an unhelpful client-side error.
+
+`FASTMCP_HOME=/data` points OAuth state at the named volume declared in `docker-compose.yml`. Without a persistent volume there, every redeploy wipes the registered client and forces you to re-authorize the connector by hand.
+
+### Step 3 — Deploy and verify
+
+Deploy with those variables set ([Coolify Deployment](#coolify-deployment) covers one setup), then:
+
+```bash
+EXPECT_OAUTH=1 ./verify_server.sh https://your-host.example.com
+```
+
+Expect **19/19**. The `EXPECT_OAUTH=1` flag matters: without it, a dead OAuth surface is reported as a *skip* and the run still exits `0`, so a broken deploy looks green. With it, the three OAuth checks fail loudly.
+
+Three of those assertions are the ones worth reading if something goes wrong:
+
+- `resource` in the protected-resource metadata must equal the URL you type into Claude, character for character.
+- Unauthenticated `POST /mcp` must return `401` **with** a `WWW-Authenticate` header — that header is what makes Claude show a Connect button instead of an error.
+- The authorization-server metadata must advertise S256 PKCE and a `registration_endpoint`, because Claude requires Dynamic Client Registration.
+
+### Step 4 — Add the connector
+
+In **Claude Desktop → Settings → Connectors** (on claude.ai it's **Customize → Connectors**):
+
+1. **+** → **Add custom connector**
+2. URL: `https://your-host.example.com/mcp` — **with** `/mcp` this time
+3. Leave **Advanced settings** empty. Those OAuth Client ID/Secret fields are for servers that don't support Dynamic Client Registration; this one does, so Claude registers itself.
+4. Approve the consent screen, then sign in with GitHub
+
+Per conversation, enable it with the **+** button → **Connectors**.
+
+**Mobile needs no setup.** The connector lives on your Anthropic account, so it appears on iOS and Android at your next login. (Adding connectors *from* mobile is in beta; Desktop and web are the supported path.)
+
+### Notes
+
+- **Only `GITHUB_ALLOWED_USER` gets in.** Any other GitHub account can complete the sign-in, then receives `401` on every tool call. Fail-closed on data.
+- **`MCP_API_KEY` still works on `/mcp`.** OAuth adds a door without locking the old one, which keeps n8n and existing Claude Code configs working unchanged. It also means a leaked `MCP_API_KEY` still reaches every tool — treat it accordingly.
+- **Keep the `--header` entry in your Claude Code config.** Account-level connectors are known-broken in Claude Code mode ([claude-code#57158](https://github.com/anthropics/claude-code/issues/57158), closed as not planned): they return `403` while working normally in Claude chat. The static-key path bypasses Anthropic's connector proxy entirely and is the reliable fallback.
+- **`/register` is unauthenticated by protocol** and its client registrations are written without a TTL. If your server is publicly discoverable, consider a reverse-proxy rate limit on that path that excludes Anthropic's egress range `160.79.104.0/21`.
+
+---
+
+## Local stdio bridge (Claude Desktop only)
+
+For a server running on `localhost`, or if you'd rather not set up OAuth. This path works only in Claude Desktop — it cannot reach claude.ai or mobile.
+
+Add this to your `claude_desktop_config.json`. Since that file accepts only stdio-based MCP entries, use [`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy) as a bridge:
+
+```json
+{
+  "mcpServers": {
+    "monarch-money": {
+      "command": "uvx",
+      "args": [
+        "mcp-proxy",
+        "--transport",
+        "streamablehttp",
+        "http://localhost:8000/mcp"
+      ],
+      "env": {
+        "API_ACCESS_TOKEN": "YOUR_MCP_API_KEY"
+      }
+    }
+  }
+}
+```
+
+> `uvx` is bundled with [uv](https://github.com/astral-sh/uv). Install it with `pip install uv` or `brew install uv`.
+
 ---
 
 ## Environment Variables
@@ -422,105 +525,6 @@ Set the monthly budget amount for a category.
 | `amount` | float | ✅ | Budget amount in USD |
 | `category_id` | string | ✅ | Category ID (from `get_transaction_categories`) |
 | `start_date` | `YYYY-MM-01` | ✅ | First day of the target month |
-
----
-
-## Claude Connector Setup (OAuth)
-
-This is how you get the tools into **Claude Desktop, claude.ai, and the mobile apps** — one setup, all three surfaces.
-
-Claude's "Add custom connector" dialog does not accept a static `Authorization: Bearer` header ([the request for it was closed as not planned](https://github.com/anthropics/claude-ai-mcp/issues/112)), so reaching those surfaces requires OAuth. This server ships an optional GitHub-backed OAuth flow that admits exactly one GitHub account: yours.
-
-**Prerequisite:** the server must be reachable over public HTTPS. Anthropic's infrastructure — not your laptop — makes the outbound call, so `localhost` cannot work here. For local-only use, skip to [Local stdio bridge](#local-stdio-bridge-claude-desktop-only) below.
-
-### Step 1 — Create a GitHub OAuth App
-
-Go to [github.com/settings/developers](https://github.com/settings/developers) → **New OAuth App**.
-
-| Field | Value |
-|---|---|
-| Application name | anything (`monarch-mcp`) |
-| Homepage URL | your server URL |
-| **Authorization callback URL** | `https://your-host.example.com/auth/callback` |
-
-The callback URL must match **exactly** — it is `PUBLIC_BASE_URL` + `/auth/callback`, and GitHub permits only one. Generate a client secret and keep it with the client ID.
-
-### Step 2 — Set the environment variables
-
-```bash
-GITHUB_CLIENT_ID=Ov23li...
-GITHUB_CLIENT_SECRET=...
-GITHUB_ALLOWED_USER=your-github-username
-PUBLIC_BASE_URL=https://your-host.example.com
-FASTMCP_HOME=/data
-```
-
-> **`PUBLIC_BASE_URL` must not include `/mcp`.** Claude is given `${PUBLIC_BASE_URL}/mcp`, but this variable is the base. Include `/mcp` here and the entire OAuth surface relocates under `/mcp/...`, discovery 404s, and the connector fails with an unhelpful client-side error.
-
-`FASTMCP_HOME=/data` points OAuth state at the named volume declared in `docker-compose.yml`. Without a persistent volume there, every redeploy wipes the registered client and forces you to re-authorize the connector by hand.
-
-### Step 3 — Deploy and verify
-
-```bash
-EXPECT_OAUTH=1 ./verify_server.sh https://your-host.example.com
-```
-
-Expect **19/19**. The `EXPECT_OAUTH=1` flag matters: without it, a dead OAuth surface is reported as a *skip* and the run still exits `0`, so a broken deploy looks green. With it, the three OAuth checks fail loudly.
-
-Three of those assertions are the ones worth reading if something goes wrong:
-
-- `resource` in the protected-resource metadata must equal the URL you type into Claude, character for character.
-- Unauthenticated `POST /mcp` must return `401` **with** a `WWW-Authenticate` header — that header is what makes Claude show a Connect button instead of an error.
-- The authorization-server metadata must advertise S256 PKCE and a `registration_endpoint`, because Claude requires Dynamic Client Registration.
-
-### Step 4 — Add the connector
-
-In **Claude Desktop → Settings → Connectors** (on claude.ai it's **Customize → Connectors**):
-
-1. **+** → **Add custom connector**
-2. URL: `https://your-host.example.com/mcp` — **with** `/mcp` this time
-3. Leave **Advanced settings** empty. Those OAuth Client ID/Secret fields are for servers that don't support Dynamic Client Registration; this one does, so Claude registers itself.
-4. Approve the consent screen, then sign in with GitHub
-
-Per conversation, enable it with the **+** button → **Connectors**.
-
-**Mobile needs no setup.** The connector lives on your Anthropic account, so it appears on iOS and Android at your next login. (Adding connectors *from* mobile is in beta; Desktop and web are the supported path.)
-
-### Notes
-
-- **Only `GITHUB_ALLOWED_USER` gets in.** Any other GitHub account can complete the sign-in, then receives `401` on every tool call. Fail-closed on data.
-- **`MCP_API_KEY` still works on `/mcp`.** OAuth adds a door without locking the old one, which keeps n8n and existing Claude Code configs working unchanged. It also means a leaked `MCP_API_KEY` still reaches every tool — treat it accordingly.
-- **Keep the `--header` entry in your Claude Code config.** Account-level connectors are known-broken in Claude Code mode ([claude-code#57158](https://github.com/anthropics/claude-code/issues/57158), closed as not planned): they return `403` while working normally in Claude chat. The static-key path bypasses Anthropic's connector proxy entirely and is the reliable fallback.
-- **`/register` is unauthenticated by protocol** and its client registrations are written without a TTL. If your server is publicly discoverable, consider a reverse-proxy rate limit on that path that excludes Anthropic's egress range `160.79.104.0/21`.
-
----
-
-## Local stdio bridge (Claude Desktop only)
-
-For a server running on `localhost`, or if you'd rather not set up OAuth. This path works only in Claude Desktop — it cannot reach claude.ai or mobile.
-
-Add this to your `claude_desktop_config.json`. Since that file accepts only stdio-based MCP entries, use [`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy) as a bridge:
-
-```json
-{
-  "mcpServers": {
-    "monarch-money": {
-      "command": "uvx",
-      "args": [
-        "mcp-proxy",
-        "--transport",
-        "streamablehttp",
-        "http://localhost:8000/mcp"
-      ],
-      "env": {
-        "API_ACCESS_TOKEN": "YOUR_MCP_API_KEY"
-      }
-    }
-  }
-}
-```
-
-> `uvx` is bundled with [uv](https://github.com/astral-sh/uv). Install it with `pip install uv` or `brew install uv`.
 
 ---
 
