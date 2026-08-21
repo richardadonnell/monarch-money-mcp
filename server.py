@@ -6,7 +6,8 @@ Dual-protocol server:
   - /api/* Plain REST endpoints (for n8n HTTP Request nodes)
   - /health Unauthenticated health check
 
-Auth: Authorization: Bearer {MCP_API_KEY} on every route except /health.
+Auth: Authorization: Bearer {MCP_API_KEY} on /api/*. /mcp accepts that key or a
+GitHub OAuth token when GITHUB_CLIENT_ID is set. /health is always public.
 
 Env vars:
   MONARCH_TOKEN      preferred; inject the Monarch bearer token directly (stateless)
@@ -15,7 +16,11 @@ Env vars:
   MONARCH_MFA_SECRET TOTP secret key for 2FA accounts (Base32 seed, NOT the 6-digit code)
                      Found in: Monarch Settings -> Security -> MFA -> "Two-factor text code"
                      Or in 1Password: Edit entry -> OTP field -> Copy Secret Key
-  MCP_API_KEY        required; protects all endpoints
+  MCP_API_KEY        required; guards /api/* always, and /mcp when OAuth is off
+  GITHUB_CLIENT_ID   optional; enables OAuth for Claude custom connectors
+  GITHUB_CLIENT_SECRET  required when GITHUB_CLIENT_ID is set
+  GITHUB_ALLOWED_USER   required when GITHUB_CLIENT_ID is set; the one GitHub login admitted
+  PUBLIC_BASE_URL       required when GITHUB_CLIENT_ID is set; must match the URL entered in Claude
   PORT               optional, defaults to 8000
 """
 
@@ -33,6 +38,8 @@ from typing import Any, Optional
 
 import uvicorn
 from fastmcp import FastMCP
+from fastmcp.server.auth import AccessToken, MultiAuth, OAuthProxy, StaticTokenVerifier
+from fastmcp.server.auth.providers.github import GitHubTokenVerifier
 from gql import gql
 from monarchmoney import MonarchMoney
 from monarchmoney.monarchmoney import MonarchMoneyEndpoints
@@ -55,6 +62,12 @@ MONARCH_PASSWORD: str | None = os.getenv("MONARCH_PASSWORD")
 # Get it from: Monarch Settings -> Security -> MFA -> "Two-factor text code"
 # Or from 1Password: Edit the Monarch entry -> OTP field -> Copy Secret Key
 MONARCH_MFA_SECRET: str | None = os.getenv("MONARCH_MFA_SECRET")
+# OAuth (optional). When GITHUB_CLIENT_ID is unset, /mcp keeps its pre-OAuth
+# behavior and APIKeyMiddleware stays the only guard -- see _build_auth().
+GITHUB_CLIENT_ID: str | None = os.getenv("GITHUB_CLIENT_ID")
+GITHUB_CLIENT_SECRET: str | None = os.getenv("GITHUB_CLIENT_SECRET")
+GITHUB_ALLOWED_USER: str | None = os.getenv("GITHUB_ALLOWED_USER")
+PUBLIC_BASE_URL: str | None = os.getenv("PUBLIC_BASE_URL")
 PORT: int = int(os.getenv("PORT", "8000"))
 
 # --- Monarch client (module-level singleton) ----------------------------------
@@ -346,6 +359,111 @@ def _json(data: Any) -> str:
     return json.dumps(data, default=str, indent=2)
 
 
+# --- OAuth -------------------------------------------------------------------
+
+
+class AllowlistedGitHubTokenVerifier(GitHubTokenVerifier):
+    """GitHub token verifier that admits exactly one GitHub login.
+
+    OAuthProxy is reachable by anyone who finds the URL, and GitHub will happily
+    authenticate any of its users. This narrows that to one account.
+
+    Returning None rather than raising is deliberate: FastMCP turns None into a
+    401 with a WWW-Authenticate header, which is the handshake Claude needs to
+    offer a Connect prompt. Raising here would not do that -- both
+    OAuthProxy.load_access_token and MultiAuth.verify_token catch every
+    exception a verifier raises and treat it as a failed match, so an
+    exception would still end up as this same None/401 path, just with the
+    real rejection reason buried in a debug log instead of the warning below.
+    """
+
+    def __init__(self, allowed_login: str, **kwargs: Any) -> None:
+        if not allowed_login:
+            raise ValueError(
+                "allowed_login must be a non-empty GitHub username; an empty "
+                "value would admit every GitHub account"
+            )
+        super().__init__(**kwargs)
+        # GitHub usernames are case-insensitive.
+        self._allowed_login = allowed_login.casefold()
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        result = await super().verify_token(token)
+        if result is None:
+            return None
+        login = result.claims.get("login")
+        if not isinstance(login, str) or login.casefold() != self._allowed_login:
+            logger.warning(
+                "Refused GitHub login %r (allowlist: %r)", login, self._allowed_login
+            )
+            return None
+        return result
+
+
+def _build_auth() -> MultiAuth | None:
+    """Compose OAuth for Claude's connector UI with the legacy key for n8n.
+
+    Returns None when GITHUB_CLIENT_ID is unset, which leaves /mcp exactly as it
+    behaved before OAuth existed. That is the documented rollback.
+    """
+    if not GITHUB_CLIENT_ID:
+        return None
+
+    missing = [
+        name
+        for name, value in (
+            ("GITHUB_CLIENT_SECRET", GITHUB_CLIENT_SECRET),
+            ("GITHUB_ALLOWED_USER", GITHUB_ALLOWED_USER),
+            ("PUBLIC_BASE_URL", PUBLIC_BASE_URL),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            "GITHUB_CLIENT_ID is set, so these are required too: " + ", ".join(missing)
+        )
+
+    verifier = AllowlistedGitHubTokenVerifier(
+        allowed_login=GITHUB_ALLOWED_USER,  # type: ignore[arg-type]
+        # ponytail: 5-minute cache. Uncached, GitHubTokenVerifier spends two
+        # api.github.com calls per MCP request against a 5000/hr budget.
+        cache_ttl_seconds=300,
+    )
+
+    proxy = OAuthProxy(
+        upstream_authorization_endpoint="https://github.com/login/oauth/authorize",
+        upstream_token_endpoint="https://github.com/login/oauth/access_token",
+        upstream_client_id=GITHUB_CLIENT_ID,
+        upstream_client_secret=GITHUB_CLIENT_SECRET,
+        token_verifier=verifier,
+        base_url=PUBLIC_BASE_URL,
+        redirect_path="/auth/callback",
+        allowed_client_redirect_uris=[
+            # claude.ai and claude.com are both Anthropic-owned; Claude's
+            # connector callback has been observed on either host.
+            "https://claude.ai/api/mcp/auth_callback",
+            "https://claude.com/api/mcp/auth_callback",
+            # Claude Code binds an ephemeral loopback port (RFC 8252).
+            "http://localhost:*",
+            "http://127.0.0.1:*",
+        ],
+    )
+
+    return MultiAuth(
+        server=proxy,
+        verifiers=[
+            # client_id is read with a bare subscript by StaticTokenVerifier;
+            # omitting it raises KeyError instead of failing auth cleanly.
+            StaticTokenVerifier(
+                {MCP_API_KEY: {"client_id": "legacy-api-key", "scopes": []}}
+            )
+        ],
+    )
+
+
+_AUTH: MultiAuth | None = _build_auth()
+
+
 # --- FastMCP instance --------------------------------------------------------
 
 mcp = FastMCP(
@@ -356,6 +474,7 @@ mcp = FastMCP(
         "investment holdings. Use ISO 8601 dates (YYYY-MM-DD) for all date parameters. "
         "Default date range when unspecified: current calendar month."
     ),
+    auth=_AUTH,
 )
 
 # --- MCP Tools ---------------------------------------------------------------
@@ -720,8 +839,19 @@ def review_uncategorized(limit: str = "25") -> str:
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        path = request.url.path
         # Health check is always public
-        if request.url.path == "/health":
+        if path == "/health":
+            return await call_next(request)
+        # With OAuth active, /mcp belongs to FastMCP's own RequireAuthMiddleware,
+        # which accepts this same key via MultiAuth -- so this middleware steps
+        # aside for it. The OAuth endpoints (/authorize, /token, /register,
+        # /consent, /auth/callback, /.well-known/*) are public by protocol, not
+        # guarded by FastMCP either; they fall through this same branch because
+        # they too are outside /api/. Without OAuth, auth=None means FastMCP
+        # guards nothing, so this middleware stays the only thing standing in
+        # front of /mcp.
+        if _AUTH is not None and not path.startswith("/api/"):
             return await call_next(request)
         auth = request.headers.get("Authorization", "")
         if not (auth.startswith("Bearer ") and auth[7:] == MCP_API_KEY):

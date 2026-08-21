@@ -17,6 +17,16 @@ os.environ.setdefault("MCP_API_KEY", "test-key")
 os.environ.setdefault("MONARCH_EMAIL", "test@example.com")
 os.environ.setdefault("MONARCH_PASSWORD", "hunter2")
 os.environ.pop("MONARCH_TOKEN", None)  # exercise the credential path
+# server.py builds its auth provider at import time and raises if OAuth is only
+# half-configured. On a machine that has real OAuth env vars -- the deploy host --
+# that would abort the import before any test runs.
+for _var in (
+    "GITHUB_CLIENT_ID",
+    "GITHUB_CLIENT_SECRET",
+    "GITHUB_ALLOWED_USER",
+    "PUBLIC_BASE_URL",
+):
+    os.environ.pop(_var, None)
 
 import server  # noqa: E402
 from gql.transport.exceptions import TransportServerError  # noqa: E402

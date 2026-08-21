@@ -26,6 +26,11 @@ REPO="${MONARCH_REPO:-$SCRIPT_DIR}"
 EXPECTED_TOOLS="${EXPECTED_TOOLS:-11}"
 # One per @mcp.prompt decorator in server.py. Bump when a prompt is added.
 EXPECTED_PROMPTS="${EXPECTED_PROMPTS:-5}"
+# 'auto' (default): sections 9-11 SKIP when the PRM is unreachable/non-200 --
+# lets this script run unmodified against a server with OAuth off. Set to 1
+# to assert OAuth must be live: a non-200 PRM then FAILs instead of skipping,
+# so a broken OAuth surface can no longer hide behind a green run.
+EXPECT_OAUTH="${EXPECT_OAUTH:-auto}"
 
 RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
 if [ ! -t 1 ]; then RED=; GRN=; YEL=; DIM=; RST=; fi
@@ -37,6 +42,10 @@ pass() { TOTAL=$((TOTAL+1)); printf '%sPASS%s  %s\n' "$GRN" "$RST" "$*"; }
 fail() { TOTAL=$((TOTAL+1)); FAILED=$((FAILED+1)); printf '%sFAIL%s  %s\n' "$RED" "$RST" "$*"; }
 info() { printf '      %s%s%s\n' "$DIM" "$*" "$RST"; }
 head2() { printf '\n%s--- %s%s\n' "$YEL" "$*" "$RST"; }
+skip() { printf '%sSKIP%s  %s\n' "$YEL" "$RST" "$*"; }
+hdr_value() {
+  grep -i "^$2:" "$1" 2>/dev/null | head -n1 | sed "s/^[^:]*:[[:space:]]*//" | tr -d '\r'
+}
 
 # --- prerequisites ------------------------------------------------------------
 
@@ -422,6 +431,96 @@ if has_session_hdr "$TMP/legacy.hdr"; then
   pass "legacy initialize returned an Mcp-Session-Id header (stateful path intact)"
 else
   fail "legacy initialize returned no Mcp-Session-Id header"
+fi
+
+# --- 9. OAuth protected resource metadata (unauthenticated) ------------------
+head2 "9. OAuth: /.well-known/oauth-protected-resource/mcp (no auth)"
+prm_code=$(curl -sS -o "$TMP/prm.raw" -w '%{http_code}' \
+  "$BASE/.well-known/oauth-protected-resource/mcp" 2>/dev/null) || prm_code=000
+de_sse "$TMP/prm.raw" "$TMP/prm.json"
+# RFC 9728 requires the PRM to be publicly readable, so 200 here only happens
+# when APIKeyMiddleware has delegated to FastMCP -- i.e. OAuth is active. When
+# OAuth is off, APIKeyMiddleware guards every non-/health path itself and
+# returns 401 for ANY unauthenticated request, route or no route -- so a
+# missing PRM never surfaces as 404. Do not switch this back to a 404 check.
+if [ "$prm_code" != "200" ]; then
+  if [ "$prm_code" = "000" ]; then
+    reason="could not connect to $BASE"  # unreachable is not the same as "not enabled"
+  else
+    reason="PRM -> $prm_code"
+  fi
+  if [ "$EXPECT_OAUTH" = "1" ]; then
+    fail "EXPECT_OAUTH=1 but OAuth surface is not live ($reason) -- skipping checks 10-11"
+  else
+    skip "OAuth not enabled on this server ($reason) -- skipping checks 9-11"
+  fi
+  OAUTH_ON=false
+else
+  OAUTH_ON=true
+  resource="$(jget "$TMP/prm.json" '.resource')"
+  if [ "$resource" = "$BASE/mcp" ]; then
+    pass "protected resource metadata -> 200, resource: $resource"
+  else
+    fail "PRM resource is '${resource:-<absent>}' (expected $BASE/mcp)"
+    info "a mismatch here is why Claude says 'Couldn't reach the MCP server'"
+  fi
+  authsrv="$(jget "$TMP/prm.json" '.authorization_servers')"
+  if [ -n "$authsrv" ]; then
+    pass "PRM advertises authorization_servers: $authsrv"
+  else
+    fail "PRM has no authorization_servers -- Claude cannot discover the AS"
+  fi
+fi
+
+# --- 10. Unauthenticated /mcp returns a WWW-Authenticate challenge -----------
+head2 "10. OAuth: unauthenticated POST /mcp -> 401 + WWW-Authenticate"
+if ! $OAUTH_ON; then
+  skip "OAuth not enabled -- skipping"
+else
+  ch_code=$(curl -sS -o "$TMP/challenge.raw" -D "$TMP/challenge.hdr" \
+    -w '%{http_code}' -X POST "$BASE/mcp" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    -H 'MCP-Protocol-Version: 2026-07-28' \
+    --data-binary '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+    2>/dev/null) || ch_code=000
+  wwwauth="$(hdr_value "$TMP/challenge.hdr" 'www-authenticate')"
+  if [ "$ch_code" != "401" ]; then
+    fail "unauthenticated /mcp -> $ch_code (expected 401)"
+    info "$(snippet "$TMP/challenge.raw")"
+  elif printf '%s' "$wwwauth" | grep -q 'resource_metadata='; then
+    pass "401 with WWW-Authenticate: $wwwauth"
+  else
+    fail "401 but WWW-Authenticate lacks resource_metadata: ${wwwauth:-<absent>}"
+    info "without it Claude shows an error instead of a Connect prompt"
+  fi
+fi
+
+# --- 11. Authorization server metadata ---------------------------------------
+head2 "11. OAuth: /.well-known/oauth-authorization-server"
+if ! $OAUTH_ON; then
+  skip "OAuth not enabled -- skipping"
+else
+  as_code=$(curl -sS -o "$TMP/asmeta.raw" -w '%{http_code}' \
+    "$BASE/.well-known/oauth-authorization-server" 2>/dev/null) || as_code=000
+  de_sse "$TMP/asmeta.raw" "$TMP/asmeta.json"
+  pkce="$(jget "$TMP/asmeta.json" '.code_challenge_methods_supported')"
+  reg="$(jget "$TMP/asmeta.json" '.registration_endpoint')"
+  if [ "$as_code" != "200" ]; then
+    fail "authorization server metadata -> $as_code (expected 200)"
+    info "$(snippet "$TMP/asmeta.raw")"
+  else
+    if printf '%s' "$pkce" | grep -q 'S256'; then
+      pass "AS metadata advertises S256 PKCE"
+    else
+      fail "AS metadata lacks S256 in code_challenge_methods_supported: ${pkce:-<absent>}"
+    fi
+    if [ -n "$reg" ]; then
+      pass "AS metadata advertises registration_endpoint: $reg"
+    else
+      fail "AS metadata has no registration_endpoint -- Claude requires DCR or CIMD"
+    fi
+  fi
 fi
 
 # --- summary ------------------------------------------------------------------

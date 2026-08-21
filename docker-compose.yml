@@ -6,6 +6,10 @@ services:
     env_file:
       - path: .env
         required: false   # optional — local users can use .env; Coolify injects vars directly
+    volumes:
+      # OAuth state: Claude's client registration and the refresh token. Without
+      # this, every rebuild wipes them and the connector must be re-authorized.
+      - oauth-state:/data
     environment:
       # Required — Coolify shows these with a red border if empty and blocks deployment
       - MCP_API_KEY=${MCP_API_KEY:?MCP_API_KEY is required}
@@ -17,6 +21,14 @@ services:
       - MONARCH_MFA_SECRET=${MONARCH_MFA_SECRET:-}
       # Optional — defaults to 8000
       - PORT=${PORT:-8000}
+      # OAuth for Claude custom connectors. Leave GITHUB_CLIENT_ID empty to
+      # disable OAuth entirely; /mcp then falls back to MCP_API_KEY only.
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - GITHUB_ALLOWED_USER=${GITHUB_ALLOWED_USER:-}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
+      # Where OAuthProxy persists its encrypted state. Must match the volume above.
+      - FASTMCP_HOME=${FASTMCP_HOME:-/data}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:' + __import__('os').environ.get('PORT','8000') + '/health')\""]
@@ -24,3 +36,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  oauth-state:
