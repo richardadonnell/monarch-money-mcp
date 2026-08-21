@@ -805,7 +805,7 @@ In `CLAUDE.md`, change:
 to:
 
 ```
-./verify_server.sh http://localhost:8000          # 17 assertions (14 + 3 OAuth, skipped when OAuth is off)
+./verify_server.sh http://localhost:8000          # 14 assertions (19 with OAuth on: +5 across 3 checks; skipped when OAuth is off)
 ```
 
 And add the new test to the list below it:
@@ -887,7 +887,7 @@ Not a code task. Run after Tasks 1-6 are merged.
       and token calls come from there with a 10-second budget. A WAF in front of the
       app breaks the flow while `/health` still looks fine.
 - [ ] Deploy
-- [ ] `./verify_server.sh https://mm-mcp.richardadonnell.com` — expect 17/17
+- [ ] `./verify_server.sh https://mm-mcp.richardadonnell.com` — expect 19/19 with OAuth enabled (14/14 before it is turned on, sections 9-11 SKIP)
 - [ ] Claude Desktop → Settings → Connectors → + → Add custom connector →
       `https://mm-mcp.richardadonnell.com/mcp` → leave Advanced settings empty
 - [ ] Confirm the connector appears on Claude mobile after next login

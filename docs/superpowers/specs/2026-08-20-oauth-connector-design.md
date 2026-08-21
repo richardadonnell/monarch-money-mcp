@@ -298,7 +298,7 @@ misdiagnosed as server faults.
 
 ## Testing
 
-### `verify_server.sh` — three new unauthenticated assertions (14 to 17)
+### `verify_server.sh` — three new unauthenticated sections (14 to 19 assertions)
 
 Appended as sections 9, 10, 11 following the existing numbered-section style:
 
